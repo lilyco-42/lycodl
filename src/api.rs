@@ -49,17 +49,56 @@ impl IntoResponse for ApiError {
 
 // ── 共享状态 ───────────────────────────────────────────────────
 
+/// 上游最新内核版本（后台定时探测，前端不必每次都等 GitHub 5~10 秒）
+#[derive(Clone, Default)]
+pub struct KernelWatch {
+    inner: Arc<RwLock<Option<Latest>>>,
+}
+
+#[derive(Clone)]
+pub struct Latest {
+    pub version: String,
+    /// 毫秒时间戳
+    pub checked_at: u64,
+}
+
+impl KernelWatch {
+    pub fn get(&self) -> Option<Latest> {
+        self.inner.read().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set(&self, version: String) {
+        let at = now_ms();
+        if let Ok(mut w) = self.inner.write() {
+            *w = Some(Latest { version, checked_at: at });
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<JobStore>,
     /// 配置的内存副本（改配置立刻对新任务生效）
     pub settings: Arc<RwLock<Settings>>,
+    /// 上游内核版本缓存（热更新红利的「红利」一半靠它：不用用户去点才告诉你有没有新版）
+    pub kernel: KernelWatch,
 }
 
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         let store = JobStore::new(settings.concurrency.max(1));
-        Self { store: Arc::new(store), settings: Arc::new(RwLock::new(settings)) }
+        Self {
+            store: Arc::new(store),
+            settings: Arc::new(RwLock::new(settings)),
+            kernel: KernelWatch::default(),
+        }
     }
 
     fn snapshot(&self) -> Settings {
@@ -143,6 +182,7 @@ async fn put_settings(
 }
 
 async fn ytdlp_info(
+    State(st): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Json<Value> {
     let check = q.get("check").map(|v| v == "1" || v == "true").unwrap_or(false);
@@ -151,11 +191,19 @@ async fn ytdlp_info(
             let mut latest: Option<String> = None;
             let mut error: Option<String> = None;
             if check {
+                // 用户主动点「检查更新」：当场问一次 GitHub，并回填缓存
                 match ytdlp::latest_version().await {
-                    Ok(v) => latest = Some(v),
+                    Ok(v) => {
+                        st.kernel.set(v.clone());
+                        latest = Some(v);
+                    }
                     Err(e) => error = Some(e),
                 }
+            } else {
+                // 平时直接给后台探到的结果，页面一打开就知道有没有新版
+                latest = st.kernel.get().map(|l| l.version);
             }
+            let latest_checked_at = st.kernel.get().map(|l| l.checked_at);
             let update_available = match &latest {
                 Some(l) => l != &k.version,
                 None => false,
@@ -165,6 +213,7 @@ async fn ytdlp_info(
                 "version": k.version,
                 "source": k.source,
                 "latest": latest,
+                "latestCheckedAt": latest_checked_at,
                 "updateAvailable": update_available,
                 "error": error,
             }))
@@ -185,6 +234,7 @@ async fn ytdlp_update() -> Result<Json<Value>, ApiError> {
         Ok((from, to, path)) => Ok(Json(json!({
             "ok": true,
             "from": from,
+            "alreadyLatest": from == to,
             "to": to,
             "path": path.display().to_string(),
         }))),
@@ -498,6 +548,43 @@ async fn static_file(uri: Uri) -> Response {
 
 // ── 启动 ───────────────────────────────────────────────────────
 
+fn state_file() -> std::path::PathBuf {
+    crate::paths::data_dir().join("web.port")
+}
+
+/// 读上次用过的端口（可能已失效，只是个提示）
+fn remembered_port() -> Option<u16> {
+    std::fs::read_to_string(state_file())
+        .ok()
+        .and_then(|t| t.trim().parse::<u16>().ok())
+}
+
+fn remember_port(port: u16) {
+    if let Some(dir) = state_file().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(state_file(), port.to_string());
+}
+
+/// 那个端口上是不是已经有一个活着的 lycodl？（认 /api/health 里的名字，别认错别的程序）
+async fn alive_at(port: u16) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(900))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let url = format!("http://127.0.0.1:{port}/api/health");
+    match client.get(&url).send().await {
+        Ok(r) => match r.json::<serde_json::Value>().await {
+            Ok(v) => v.get("name").and_then(|n| n.as_str()) == Some("lycodl"),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
+}
+
 fn port() -> u16 {
     for key in ["LYCODL_PORT", "LILYCO_PORT"] {
         if let Ok(v) = std::env::var(key) {
@@ -519,6 +606,28 @@ pub fn serve() {
         .build()
         .expect("tokio runtime");
     rt.block_on(async move {
+        // 已经开着一个就把浏览器指过去，别在同一台机器上叠出第二个服务
+        if let Some(p) = remembered_port() {
+            if alive_at(p).await {
+                let url = format!("http://127.0.0.1:{p}");
+                println!("lycodl 已在运行: {url}");
+                maybe_open_browser(&url);
+                return;
+            }
+        }
+        // 后台探上游版本：启动时一次，之后每 6 小时一次；失败了下次再试，绝不打扰用户
+        {
+            let watch = state.kernel.clone();
+            tokio::spawn(async move {
+                loop {
+                    match ytdlp::latest_version().await {
+                        Ok(v) => watch.set(v),
+                        Err(e) => eprintln!("lycodl: 检查内核更新失败（稍后重试）: {e}"),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+                }
+            });
+        }
         let app = router(state);
         // 端口可能被别的程序占着，逐个往后找，别让用户对着报错干瞪眼
         let mut listener = None;
@@ -541,6 +650,7 @@ pub fn serve() {
         };
         let port = chosen;
         let url = format!("http://127.0.0.1:{port}");
+        remember_port(port);
         println!("lycodl Web 控制台: {url}");
         if crate::assets::embedded() {
             println!("前端已编入二进制（webMode=embedded）");

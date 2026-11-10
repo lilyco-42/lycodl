@@ -19,6 +19,7 @@ YouTube 现在对 web 客户端只发 SABR 流，动不动就是 403 / "Sign in 
 同一份 `lilyco` 命令注册表驱动四种入口，命令签名即 AI 可直接调用的工具签名：
 
 ```bash
+lycodl --version    # 本体版本 + 内核版本（排查用）
 lycodl              # 裸跑 → 起本地 Web 控制台（主入口，自动开浏览器）
 lycodl --web        # 同上，显式
 lycodl <子命令>     # CLI，脚本友好
@@ -36,6 +37,38 @@ cd .. && cargo build --release
 
 首次运行会自动探测系统里已有的 yt-dlp；想用托管副本就执行一次 `lycodl kernel-update`。
 
+## 常驻与单实例
+
+重复执行 `lycodl --web` 不会叠出第二个服务：程序会把端口记在 `~/.local/share/lycodl/web.port`，启动前先探一下那个端口上的 `/api/health` 是不是自己（校验 `name == "lycodl"`，不认错别的程序），是就直接打印
+
+```
+lycodl 已在运行: http://127.0.0.1:8766
+```
+
+然后退出。想开机自启，用 systemd user 单元（本仓库不带安装脚本，手写即可）：
+
+```ini
+# ~/.config/systemd/user/lycodl.service
+[Unit]
+Description=lycodl 视频下载器
+
+[Service]
+Type=simple
+Environment=LYCODL_NO_OPEN=1
+ExecStart=%h/.local/bin/lycodl --web
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now lycodl.service
+```
+
 ## 命令
 
 | 命令 | 分级 | 说明 |
@@ -50,6 +83,8 @@ cd .. && cargo build --release
 | `settings-set` | T1 需确认 | 修改配置 |
 
 `lycodl --schema` 输出全部命令的 JSON Schema，`--help` 看人类可读版本。
+
+内核巡检是后台做的：服务启动时以及之后每 6 小时问一次 GitHub，把最新版本号缓存在内存里，所以设置页一打开就能看到「最新版本」，不用手点「检查更新」。更新是**幂等**的 —— 已经是最新版就直接返回 `alreadyLatest: true`，不会白拉 41 MB；要强制重装设 `LYCODL_KERNEL_FORCE=1`。
 
 ## 网页控制台
 
@@ -70,6 +105,7 @@ cd .. && cargo build --release
 | `LYCODL_JS_RUNTIME` | 显式指定 JS 运行时，形如 `node:/abs/path/to/node` |
 | `LYCODL_PORT` | Web 端口（默认 8765，其次读 `LILYCO_PORT`；被占用时自动往后找可用端口） |
 | `LYCODL_NO_OPEN` | 设为 `1` 则不自动开浏览器 |
+| `LYCODL_KERNEL_FORCE` | 设为 `1` 则 `kernel-update` 无视版本号强制重装内核 |
 
 ## YouTube 的两个硬前提
 

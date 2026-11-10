@@ -703,7 +703,13 @@ pub async fn update() -> Result<(String, String, PathBuf), String> {
     let current = locate().map(|k| k.version).unwrap_or_else(|_| "无".into());
     let client = http()?;
     // 先探一次上游版本，顺带确认网络与 GitHub API 可达
-    let _latest = latest_version().await?;
+    let latest = latest_version().await?;
+    // 已经是最新就别白拉 41 MB —— 除非用户明确要求强制重装
+    let force = std::env::var("LYCODL_KERNEL_FORCE").map(|v| v == "1").unwrap_or(false);
+    if !force && current == latest && managed_exists() {
+        let path = crate::paths::managed_ytdlp();
+        return Ok((current.clone(), current, path));
+    }
     let asset = asset_name();
 
     // 校验和清单（拿不到就拒绝安装 —— 宁可失败也不装未经校验的二进制）

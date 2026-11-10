@@ -211,6 +211,7 @@ fn run_kernel_update(_app: &KernelUpdateCmd, ctx: &Context) -> Result<Value, App
             let out = json!({
                 "ok": true,
                 "from": from,
+                "alreadyLatest": from == to,
                 "to": to,
                 "path": path.display().to_string(),
             });

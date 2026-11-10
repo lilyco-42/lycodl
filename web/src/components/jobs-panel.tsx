@@ -12,6 +12,7 @@ import {
   Clock,
   Gauge,
   Files,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -225,6 +226,25 @@ function JobCard({ job, cancelling, onCancel, onReveal }: JobCardProps) {
 
         {job.error !== null && job.error !== "" ? (
           <ErrorAlert title="任务出错" message={job.error} />
+        ) : null}
+
+        {job.warnings.length > 0 ? (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <div className="flex items-center gap-1 font-medium">
+              <TriangleAlert className="size-3" />
+              有 {job.warnings.length} 条提示
+            </div>
+            <ul className="mt-1 list-inside list-disc space-y-0.5 break-words">
+              {job.warnings.slice(0, 3).map((w) => (
+                <li key={w} className="font-mono text-[11px] opacity-90">
+                  {w}
+                </li>
+              ))}
+            </ul>
+            {job.warnings.length > 3 ? (
+              <div className="mt-1 opacity-70">…等共 {job.warnings.length} 条</div>
+            ) : null}
+          </div>
         ) : null}
 
         {job.status === "done" && (job.output ?? job.fileName) !== null ? (

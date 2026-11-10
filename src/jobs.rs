@@ -51,6 +51,8 @@ pub struct Job {
     pub playlist_index: Option<u64>,
     /// 播放列表总项数（单视频为 null）
     pub playlist_count: Option<u64>,
+    /// 非致命告警（如播放列表里跳过了几项）：任务仍算成功，但要让人看见
+    pub warnings: Vec<String>,
     /// 毫秒时间戳（前端按 >1e12 视为毫秒，两可）
     pub created_at: u64,
     pub ended_at: Option<u64>,
@@ -68,12 +70,23 @@ pub struct JobStore {
     inner: Arc<Mutex<HashMap<String, Job>>>,
     cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     tx: broadcast::Sender<Job>,
-    sem: Arc<tokio::sync::Semaphore>,
-    /// 当前并发上限（并发只增不减；调小需重启生效）
+    /// 正在跑的任务数（不用 Semaphore：令牌发出去了就收不回来，
+    /// 那样「把并发数调小」永远不生效。自管计数 + 轮询等待才能真正收紧上限）
+    running: Arc<std::sync::atomic::AtomicUsize>,
+    /// 当前并发上限（可随时调整，调小后已在跑的不打断，新任务等名额）
     conc: Arc<std::sync::atomic::AtomicUsize>,
     seq: Arc<AtomicU64>,
     /// 日志尾部（每个任务最近若干行），用于失败排查
     logs: Arc<Mutex<HashMap<String, Vec<String>>>>,
+}
+
+/// 名额守卫：任务结束（无论成功/失败/取消/提前返回）都把名额还回去
+struct SlotGuard(std::sync::Arc<JobStore>);
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.0.release_slot();
+    }
 }
 
 pub struct NewJob {
@@ -92,7 +105,7 @@ impl JobStore {
             inner: Arc::new(Mutex::new(HashMap::new())),
             cancel: Arc::new(Mutex::new(HashMap::new())),
             tx,
-            sem: Arc::new(tokio::sync::Semaphore::new(concurrency.max(1))),
+            running: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             conc: Arc::new(std::sync::atomic::AtomicUsize::new(concurrency.max(1))),
             seq: Arc::new(AtomicU64::new(0)),
             logs: Arc::new(Mutex::new(HashMap::new())),
@@ -103,13 +116,46 @@ impl JobStore {
         self.tx.subscribe()
     }
 
-    /// 调整并发上限：调大立即生效（补发 permits），调小等重启再生效
+    /// 调整并发上限：调大立刻能用满，调小后已在跑的任务不被打断，
+    /// 但空出来的名额不会再被填上，直到活跃数降到新上限以下。
     pub fn set_concurrency(&self, n: usize) {
-        let want = n.max(1);
-        let old = self.conc.swap(want, Ordering::SeqCst);
-        if want > old {
-            self.sem.add_permits(want - old);
+        self.conc.store(n.max(1), Ordering::SeqCst);
+    }
+
+    pub fn concurrency(&self) -> usize {
+        self.conc.load(Ordering::SeqCst).max(1)
+    }
+
+    pub fn running(&self) -> usize {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    /// 拿一个下载名额：名额满了就等着。用轮询而不是信号量，
+    /// 因为上限随时可能被调小 —— 信号量发出去的许可收不回来。
+    async fn acquire_slot(&self) -> usize {
+        loop {
+            let cur = self.running.load(Ordering::SeqCst);
+            let cap = self.concurrency();
+            if cur < cap {
+                if self
+                    .running
+                    .compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    return cur + 1;
+                }
+                continue;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
+    }
+
+    fn release_slot(&self) {
+        let _ = self
+            .running
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                Some(v.saturating_sub(1))
+            });
     }
 
     pub fn list(&self) -> Vec<Job> {
@@ -215,6 +261,7 @@ impl JobStore {
             error: None,
             playlist_index: None,
             playlist_count: None,
+            warnings: Vec::new(),
             created_at: now_ms(),
             ended_at: None,
         };
@@ -241,11 +288,8 @@ impl JobStore {
         let store = self.clone();
         let jid = id.clone();
         tokio::spawn(async move {
-            let permit = store.sem.clone().acquire_owned().await;
-            let _permit = match permit {
-                Ok(p) => p,
-                Err(_) => return,
-            };
+            store.acquire_slot().await;
+            let _guard = SlotGuard(store.clone());
             if flag.load(Ordering::SeqCst) {
                 store.update(&jid, |j| {
                     j.status = Status::Cancelled;
@@ -321,6 +365,18 @@ impl JobStore {
                         s2.update(&j2, |j| {
                             j.output = Some(parent);
                             j.file_name = Some(name);
+                        });
+                    }
+                    Event::Warn(w) => {
+                        s2.push_log(&j2, format!("WARN: {w}"));
+                        s2.update(&j2, |j| {
+                            if !j.warnings.iter().any(|x| x == &w) {
+                                j.warnings.push(w);
+                                // 上千项的播放列表别把内存撑爆
+                                if j.warnings.len() > 50 {
+                                    j.warnings.remove(0);
+                                }
+                            }
                         });
                     }
                     Event::Log(l) => s2.push_log(&j2, l),

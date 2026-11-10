@@ -56,13 +56,22 @@ export function SettingsPanel() {
       return;
     }
     try {
-      await save({
+      const prevConcurrency = settings?.concurrency ?? parsedConcurrency;
+      const result = await save({
         outputDir: outputDir.trim(),
         cookiesFromBrowser: cookiesFromBrowser === NO_COOKIE ? null : cookiesFromBrowser,
         proxy: proxy.trim() === "" ? null : proxy.trim(),
         concurrency: parsedConcurrency,
       });
-      toast.success("设置已保存");
+      const running = result.running ?? 0;
+      if (parsedConcurrency < prevConcurrency && running > parsedConcurrency) {
+        // 调小时不打断已在跑的：名额是空出来一个少一个，说清楚免得以为没生效
+        toast.success("设置已保存", {
+          description: `并发已降到 ${parsedConcurrency}；当前仍在跑 ${running} 个任务，它们不会被打断，新任务按新上限排队`,
+        });
+      } else {
+        toast.success("设置已保存");
+      }
     } catch (cause) {
       toast.error("保存失败", { description: errorMessage(cause) });
     }

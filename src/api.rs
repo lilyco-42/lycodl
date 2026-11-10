@@ -179,7 +179,14 @@ async fn put_settings(
         *w = next.clone();
     }
     st.store.set_concurrency(next.concurrency);
-    Ok(Json(json!({ "ok": true, "settings": next })))
+    // 并发上限随时可调，但已经在跑的任务不会被打断 —— 把「现在还在跑几个」
+    // 一并回给前端，用户改小之后才不会以为没生效
+    Ok(Json(json!({
+        "ok": true,
+        "settings": next,
+        "running": st.store.running(),
+        "effectiveConcurrency": st.store.concurrency(),
+    })))
 }
 
 async fn ytdlp_info(

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorMessage, type Settings } from "@/lib/api";
+import { api, errorMessage, type Settings, type SettingsResponse } from "@/lib/api";
 
 /** 设置读写。 */
 export function useSettings() {
@@ -39,7 +39,7 @@ export function useSettings() {
     void load();
   }, [load]);
 
-  const save = useCallback(async (patch: Partial<Settings>): Promise<Settings> => {
+  const save = useCallback(async (patch: Partial<Settings>): Promise<SettingsResponse> => {
     setSaving(true);
     try {
       const result = await api.saveSettings(patch);
@@ -47,7 +47,7 @@ export function useSettings() {
         setSettings(result.settings);
         setError(null);
       }
-      return result.settings;
+      return result;
     } finally {
       if (mountedRef.current) {
         setSaving(false);

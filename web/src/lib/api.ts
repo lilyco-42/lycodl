@@ -23,6 +23,10 @@ export interface Settings {
 export interface SettingsResponse {
   ok: true;
   settings: Settings;
+  /** 保存时正在跑的任务数（调小并发后能看到「当前仍有几个在跑」） */
+  running?: number;
+  /** 后端当前实际生效的并发上限 */
+  effectiveConcurrency?: number;
 }
 
 export type YtdlpSource = "managed" | "system";
@@ -116,6 +120,8 @@ export interface Job {
   playlistIndex: number | null;
   /** 播放列表总项数（单视频为 null） */
   playlistCount: number | null;
+  /** 非致命告警：如播放列表里被跳过的条目（任务仍算成功） */
+  warnings: string[];
   createdAt: number;
   endedAt: number | null;
 }

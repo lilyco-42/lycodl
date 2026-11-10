@@ -423,6 +423,8 @@ pub enum Event {
         index: Option<u64>,
     },
     File(String),
+    /// 非致命问题（播放列表里某一项失败被跳过）：整体仍成功，但要让人知道漏了什么
+    Warn(String),
     Log(String),
 }
 
@@ -475,6 +477,13 @@ pub fn build_args(o: &DownloadOpts) -> Vec<String> {
         "4".into(),
         "--socket-timeout".into(),
         "30".into(),
+        // 网络抖动不该让整条下载白跑
+        "--retries".into(),
+        "10".into(),
+        "--fragment-retries".into(),
+        "10".into(),
+        "--retry-sleep".into(),
+        "2".into(),
         "-P".into(),
         o.output_dir.display().to_string(),
         "-o".into(),
@@ -641,6 +650,7 @@ where
     });
 
     let mut final_file = String::new();
+    let mut completed: Vec<String> = Vec::new();
     let mut current_base: Option<String> = None;
     let mut cancelled = false;
 
@@ -703,6 +713,7 @@ where
             let p = rest.trim();
             if !p.is_empty() && p != "NA" {
                 final_file = p.to_string();
+                completed.push(p.to_string());
                 sink(Event::File(final_file.clone()));
             }
         } else if !t.is_empty() {
@@ -736,6 +747,29 @@ where
             .filter(|l| l.contains("ERROR"))
             .cloned()
             .collect::<Vec<_>>();
+        // 播放列表 + --ignore-errors：yt-dlp 会因为「有项失败」返回非零，但只要真有成品落盘，
+        // 这批就是部分成功。此时不该把整个任务判死，而要把失败项报出来让人知道。
+        if o.playlist && !completed.is_empty() {
+            let skipped: Vec<String> = joined
+                .iter()
+                .map(|l| friendly_error(l))
+                .collect::<Vec<_>>();
+            if skipped.is_empty() {
+                sink(Event::Warn(format!(
+                    "有部分条目未能下载，成功 {} 项",
+                    completed.len()
+                )));
+            } else {
+                for w in &skipped {
+                    sink(Event::Warn(w.clone()));
+                }
+                sink(Event::Warn(format!(
+                    "成功 {} 项，其余条目已跳过",
+                    completed.len()
+                )));
+            }
+            return Ok(final_file);
+        }
         let msg = if joined.is_empty() {
             errors.last().cloned().unwrap_or_default()
         } else {
@@ -748,6 +782,25 @@ where
             msg.to_string()
         };
         return Err(friendly_error(&raw));
+    }
+    // 播放列表 + --ignore-errors 时 yt-dlp 即便有项失败也返回 0：
+    // 不能让「跳过 3 项」悄无声息地算作完全成功。
+    if o.playlist {
+        let skipped: Vec<String> = errors
+            .iter()
+            .filter(|l| l.contains("ERROR"))
+            .map(|l| friendly_error(l))
+            .collect();
+        for w in skipped.iter().take(20) {
+            sink(Event::Warn(w.clone()));
+        }
+        if !skipped.is_empty() {
+            sink(Event::Warn(format!(
+                "共 {} 个条目失败已跳过，成功 {} 项",
+                skipped.len(),
+                completed.len()
+            )));
+        }
     }
     Ok(final_file)
 }

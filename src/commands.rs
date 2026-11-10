@@ -146,6 +146,7 @@ fn run_download(app: &DownloadCmd, ctx: &Context) -> Result<Value, AppError> {
                 ctx.tick(downloaded.max(0) as u64, total.map(|t| t.max(0) as u64), msg);
             }
             Event::File(p) => ctx.log(LogLevel::Info, format!("完成: {p}")),
+            Event::Warn(w) => ctx.log(LogLevel::Warn, format!("跳过: {w}")),
             Event::Log(l) => ctx.log(LogLevel::Debug, l),
         }
     })

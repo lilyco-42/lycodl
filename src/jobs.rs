@@ -311,6 +311,16 @@ impl JobStore {
                         j.percent = 100.0;
                         j.speed = None;
                         j.eta = None;
+                        // 完成时以成品文件的真实大小为准：音频抽取会把 mp4 转成 mp3，
+                        // 用下载阶段的 total_bytes 会显示成「0 B / 2.7 MB」这种自相矛盾的数字
+                        let mut size = std::fs::metadata(&file).map(|m| m.len() as i64).ok();
+                        if size.unwrap_or(0) <= 0 {
+                            size = j.total_bytes;
+                        }
+                        if let Some(n) = size {
+                            j.downloaded_bytes = n;
+                            j.total_bytes = Some(n);
+                        }
                         if !parent.is_empty() {
                             j.output = Some(parent);
                         }

@@ -68,7 +68,7 @@ cd .. && cargo build --release
 | `LYCODL_OUTPUT_DIR` | 覆盖输出目录 |
 | `LYCODL_YTDLP` | 指定内核二进制路径（优先级最高） |
 | `LYCODL_JS_RUNTIME` | 显式指定 JS 运行时，形如 `node:/abs/path/to/node` |
-| `LYCODL_PORT` | Web 端口（默认 8765，其次读 `LILYCO_PORT`） |
+| `LYCODL_PORT` | Web 端口（默认 8765，其次读 `LILYCO_PORT`；被占用时自动往后找可用端口） |
 | `LYCODL_NO_OPEN` | 设为 `1` 则不自动开浏览器 |
 
 ## YouTube 的两个硬前提

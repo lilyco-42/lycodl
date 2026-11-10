@@ -520,14 +520,26 @@ pub fn serve() {
         .expect("tokio runtime");
     rt.block_on(async move {
         let app = router(state);
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let listener = match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("lycodl: 绑定 127.0.0.1:{port} 失败: {e}");
-                std::process::exit(1);
+        // 端口可能被别的程序占着，逐个往后找，别让用户对着报错干瞪眼
+        let mut listener = None;
+        let mut chosen = port;
+        let mut last_err = String::new();
+        for candidate in port..port.saturating_add(20) {
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], candidate));
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(l) => {
+                    listener = Some(l);
+                    chosen = candidate;
+                    break;
+                }
+                Err(e) => last_err = format!("{e}"),
             }
+        }
+        let Some(listener) = listener else {
+            eprintln!("lycodl: 绑定 127.0.0.1:{port}..{} 全部失败: {last_err}", port.saturating_add(20));
+            std::process::exit(1);
         };
+        let port = chosen;
         let url = format!("http://127.0.0.1:{port}");
         println!("lycodl Web 控制台: {url}");
         if crate::assets::embedded() {

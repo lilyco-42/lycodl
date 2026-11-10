@@ -28,6 +28,21 @@ const BANNER: &str = "lycodl —— 多平台视频下载器（yt-dlp 内核 + l
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "lycodl {} ({} {})",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TARGET").unwrap_or(std::env::consts::OS),
+            std::env::consts::ARCH
+        );
+        let kernel = crate::ytdlp::locate();
+        match kernel {
+            Ok(k) => println!("yt-dlp {} ({})", k.version, k.path.display()),
+            Err(e) => println!("yt-dlp 不可用: {e}"),
+        }
+        return;
+    }
+
     // --web / --gui 走本项目自己的 axum 控制台（不是 lilyco-gui 的通用表单页）
     let wants_web = args.iter().any(|a| a == "--web" || a == "--gui");
     let wants_web = wants_web

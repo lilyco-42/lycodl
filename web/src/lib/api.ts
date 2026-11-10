@@ -130,6 +130,12 @@ export interface JobsResponse {
   jobs: Job[];
 }
 
+export interface JobLogsResponse {
+  id: string;
+  /** 该任务最近若干行原始输出（yt-dlp stdout/stderr 提炼后的日志尾） */
+  logs: string[];
+}
+
 export interface FileItem {
   name: string;
   size: number;
@@ -278,6 +284,16 @@ export const api = {
     }),
 
   listJobs: () => request<JobsResponse>("/api/jobs"),
+
+  // 重试：后端复用原任务的 url / 模式 / 画质 / 格式 ID / 列表开关，直接排一个新任务
+  retryJob: (id: string) =>
+    request<CreateDownloadResponse>("/api/jobs/" + encodeURIComponent(id) + "/retry", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+
+  jobLogs: (id: string) =>
+    request<JobLogsResponse>("/api/jobs/" + encodeURIComponent(id) + "/logs"),
 
   cancelJob: (id: string) =>
     request<{ ok: true }>("/api/jobs/" + encodeURIComponent(id) + "/cancel", {

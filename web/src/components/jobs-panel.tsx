@@ -12,6 +12,7 @@ import {
   Clock,
   Gauge,
   Files,
+  RotateCcw,
   TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -23,6 +24,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorAlert } from "@/components/error-alert";
+import { JobLogsButton } from "@/components/job-logs-dialog";
 import { api } from "@/lib/api";
 import type { Job, JobStatus } from "@/lib/api";
 import { errorMessage } from "@/lib/api";
@@ -53,8 +55,9 @@ function isActive(job: Job): boolean {
 
 /** 任务面板：列表 + SSE 实时进度 + 取消 / 打开位置。 */
 export function JobsPanel() {
-  const { jobs, loading, error, refresh, cancelJob } = useJobs();
+  const { jobs, loading, error, refresh, cancelJob, retryJob } = useJobs();
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
+  const [retrying, setRetrying] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
 
   const activeCount = jobs.filter(isActive).length;
@@ -68,6 +71,24 @@ export function JobsPanel() {
       toast.error("取消失败", { description: errorMessage(cause) });
     } finally {
       setCancelling((prev) => {
+        const next = { ...prev };
+        delete next[job.id];
+        return next;
+      });
+    }
+  }
+
+  // 重试：后端拿原任务的 url / 模式 / 画质 / 格式 / 列表开关重排一个任务，
+  // 不需要用户再回下载页重新粘贴链接和解析
+  async function handleRetry(job: Job) {
+    setRetrying((prev) => ({ ...prev, [job.id]: true }));
+    try {
+      const newId = await retryJob(job.id);
+      toast.success("已重新排入队列", { description: "新任务 ID：" + newId });
+    } catch (cause) {
+      toast.error("重试失败", { description: errorMessage(cause) });
+    } finally {
+      setRetrying((prev) => {
         const next = { ...prev };
         delete next[job.id];
         return next;
@@ -160,8 +181,10 @@ export function JobsPanel() {
             key={job.id}
             job={job}
             cancelling={cancelling[job.id] === true}
+            retrying={retrying[job.id] === true}
             onCancel={() => void handleCancel(job)}
             onReveal={() => void handleReveal(job)}
+            onRetry={() => void handleRetry(job)}
           />
         ))}
       </div>
@@ -172,11 +195,13 @@ export function JobsPanel() {
 interface JobCardProps {
   job: Job;
   cancelling: boolean;
+  retrying: boolean;
   onCancel: () => void;
   onReveal: () => void;
+  onRetry: () => void;
 }
 
-function JobCard({ job, cancelling, onCancel, onReveal }: JobCardProps) {
+function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: JobCardProps) {
   const meta = STATUS_META[job.status];
   const StatusIcon = meta.icon;
   const percent = clampPercent(job.percent);
@@ -253,30 +278,28 @@ function JobCard({ job, cancelling, onCancel, onReveal }: JobCardProps) {
           </div>
         ) : null}
 
-        {active || job.status === "done" ? (
-          <>
-            <Separator />
-            <div className="flex items-center justify-end gap-2">
-              {active ? (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={onCancel}
-                  disabled={cancelling}
-                >
-                  {cancelling ? <LoaderCircle className="animate-spin" /> : <Ban />}
-                  {cancelling ? "取消中…" : "取消"}
-                </Button>
-              ) : null}
-              {job.status === "done" ? (
-                <Button variant="outline" size="sm" onClick={onReveal}>
-                  <FolderOpen />
-                  打开位置
-                </Button>
-              ) : null}
-            </div>
-          </>
-        ) : null}
+        <Separator />
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <JobLogsButton jobId={job.id} />
+          {job.status === "failed" || job.status === "cancelled" ? (
+            <Button variant="outline" size="sm" onClick={onRetry} disabled={retrying}>
+              {retrying ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}
+              {retrying ? "重试中…" : "重试"}
+            </Button>
+          ) : null}
+          {active ? (
+            <Button variant="destructive" size="sm" onClick={onCancel} disabled={cancelling}>
+              {cancelling ? <LoaderCircle className="animate-spin" /> : <Ban />}
+              {cancelling ? "取消中…" : "取消"}
+            </Button>
+          ) : null}
+          {job.status === "done" ? (
+            <Button variant="outline" size="sm" onClick={onReveal}>
+              <FolderOpen />
+              打开位置
+            </Button>
+          ) : null}
+        </div>
       </CardContent>
     </Card>
   );

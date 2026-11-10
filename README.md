@@ -144,6 +144,24 @@ lycodl download --url <视频页> --mode custom --format-id 137
 
 实测（打桩内核模拟 3 项里第 2 项私有视频失败）：任务仍是 `done / 100.0%`，`warnings` 里两条——一条原始错误 + 中文提示，一条「共 2 项成功、其余已跳过」的汇总。
 
+## 重试与日志
+
+失败的任务不用回下载页重新粘贴链接：任务卡片右下角的「重试」会调 `POST /api/jobs/{id}/retry`，后端拿原任务的 `url` / `mode` / `quality` / `format_id` / `playlist` 重新排一个新任务（`JobStore::respawn`），当前设置里的 Cookie / 代理 / 输出目录也一并沿用。
+
+- 所以 `Job` 里保存了 `quality`、`formatId`、`playlist` 三个字段 —— 纯粹为了重试时原样复用（这几个信息本来只在创建那一刻用到，存下来才不用让用户重填）。
+- 正在跑（queued / running）的任务点重试会被拒：`400 {"error":"任务还在进行中，不需要重试"}`，避免误点把同一份内容下两遍。
+- 重试是「新任务」，旧任务记录保留，方便对比两次的报错。
+
+任务卡片上的「日志」按钮对应 `GET /api/jobs/{id}/logs`（这个接口早就有，之前界面上一直没入口）。里面按时间顺序列：
+
+1. **完整命令行** —— 过滤掉进度模板后的真实 yt-dlp 调用，包含当时用的 Cookie 来源、JS 运行时、输出路径；
+2. `ERROR:` 原始报错行 —— 卡片上的 `error` 是 `friendly_error()` 翻译过的中文提示，排查还是得看原文；
+3. 结束态标记 —— `完成：<文件>` / `任务失败：<原因>` / `任务已取消` / `下载线程崩溃：<原因>`。
+
+日志每任务最多保留 300 行（超出丢最旧的），随任务一起被 `prune()` 的 200 条上限回收。
+
+实测：一个指向不存在视频的任务，卡片上 `error` 是中文提示，日志弹窗里能看到 `ERROR: [youtube] zzzzzzzzzzz: This video is unavailable` 与 `任务失败：…`；点「重试」后 toast 提示「已重新排入队列」并生成新任务 ID。
+
 ## 配置
 
 优先级：环境变量 > `~/.config/lycodl/settings.json` > 默认值。Web 设置页写的就是这个文件。
@@ -184,7 +202,7 @@ src/
   main.rs      四端分发（Web / CLI / TUI / MCP）
   commands.rs  8 个 #[derive(App)] 命令 + 注册表装配
   api.rs       axum 路由：REST + SSE + 静态资源
-  jobs.rs      任务表、并发信号量、进度广播
+  jobs.rs      任务表、并发槽位、进度广播、重试（respawn）
   ytdlp.rs     内核探测 / 探活 / 解析 / 下载 / 校验 / 热更新
   policy.rs    DownloadOnly 与 Agent 两条安全策略
   settings.rs  配置读写

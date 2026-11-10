@@ -136,11 +136,21 @@ export function useJobs() {
     [refresh],
   );
 
+  // 重试：后端会拿原任务的参数排一个新任务，返回新任务 id
+  const retryJob = useCallback(
+    async (id: string): Promise<string> => {
+      const result = await api.retryJob(id);
+      refresh();
+      return result.jobId;
+    },
+    [refresh],
+  );
+
   const sortedJobs = jobs.slice().sort((a, b) => {
     const rank = (job: Job) => (isActiveStatus(job.status) ? 0 : 1);
     const rankDiff = rank(a) - rank(b);
     return rankDiff !== 0 ? rankDiff : b.createdAt - a.createdAt;
   });
 
-  return { jobs: sortedJobs, loading, error, refresh, cancelJob };
+  return { jobs: sortedJobs, loading, error, refresh, cancelJob, retryJob };
 }

@@ -119,6 +119,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{id}/events", get(job_events))
         .route("/api/jobs/{id}/cancel", post(cancel_job))
+        .route("/api/jobs/{id}/retry", post(retry_job))
         .route("/api/jobs/{id}/logs", get(job_logs))
         .route("/api/files", get(list_files))
         .route("/api/reveal", post(reveal))
@@ -319,6 +320,12 @@ async fn download(State(st): State<AppState>, Json(req): Json<DownloadReq>) -> R
         })
         .map_err(ApiError::bad)?;
     Ok(Json(json!({ "ok": true, "jobId": job_id })))
+}
+
+/// 重试：拿原任务的参数重新排一个任务（失败 / 取消后一键重来，不必回头重新解析）
+async fn retry_job(State(st): State<AppState>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let new_id = st.store.respawn(&id).map_err(ApiError::bad)?;
+    Ok(Json(json!({ "ok": true, "jobId": new_id })))
 }
 
 async fn list_jobs(State(st): State<AppState>) -> Json<Value> {

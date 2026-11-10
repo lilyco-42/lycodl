@@ -768,7 +768,13 @@ where
                     completed.len()
                 )));
             }
+            sink(Event::Log(format!("完成：{final_file}")));
             return Ok(final_file);
+        }
+        // 失败时把 yt-dlp 的原始 stderr 尾部写进日志：界面上的 error 是翻译过的中文提示，
+        // 排查时还是得看原文（任务面板的「日志」按钮就是为这个加的）。
+        for line in errors.iter().rev().take(20).rev() {
+            sink(Event::Log(line.clone()));
         }
         let msg = if joined.is_empty() {
             errors.last().cloned().unwrap_or_default()
@@ -801,6 +807,9 @@ where
                 completed.len()
             )));
         }
+    }
+    if !final_file.is_empty() {
+        sink(Event::Log(format!("完成：{final_file}")));
     }
     Ok(final_file)
 }

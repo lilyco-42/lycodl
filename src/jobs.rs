@@ -37,6 +37,12 @@ pub struct Job {
     pub url: String,
     pub title: String,
     pub mode: String,
+    /// 画质上限（重试时原样复用）
+    pub quality: String,
+    /// 自定义格式 ID（重试时原样复用）
+    pub format_id: Option<String>,
+    /// 是否整列表下载（重试时原样复用）
+    pub playlist: bool,
     pub status: Status,
     /// 0–100
     pub percent: f64,
@@ -239,6 +245,24 @@ impl JobStore {
         }
     }
 
+    /// 按已有任务的参数重开一个任务（失败 / 取消之后重试）。
+    /// 直接复用原任务的 url / 模式 / 画质 / 格式 ID / 播放列表开关，
+    /// 用户不用回去重新解析一遍 —— 网络抖一下就得重填 URL 太难受了。
+    pub fn respawn(self: &Arc<Self>, id: &str) -> Result<String, String> {
+        let old = self.get(id).ok_or_else(|| format!("任务不存在: {id}"))?;
+        if old.status.is_active() {
+            return Err("任务还在进行中，不需要重试".into());
+        }
+        self.spawn(NewJob {
+            url: old.url,
+            mode: old.mode,
+            quality: old.quality,
+            format_id: old.format_id,
+            playlist: old.playlist,
+            settings: crate::settings::load(),
+        })
+    }
+
     /// 建任务并立刻返回 id；真正的下载在后台跑
     pub fn spawn(self: &Arc<Self>, req: NewJob) -> Result<String, String> {
         let out_dir = crate::settings::ensure_output_dir(&req.settings)?;
@@ -250,6 +274,9 @@ impl JobStore {
             url: req.url.clone(),
             title: String::new(),
             mode: req.mode.clone(),
+            quality: req.quality.clone(),
+            format_id: req.format_id.clone(),
+            playlist: req.playlist,
             status: Status::Queued,
             percent: 0.0,
             downloaded_bytes: 0,
@@ -418,6 +445,7 @@ impl JobStore {
                         }
                         j.ended_at = Some(now_ms());
                     });
+                    store.push_log(&jid, "任务完成".into());
                 }
                 Ok(Err(e)) => {
                     let cancelled = e.contains("已取消") || e.contains("cancel");
@@ -432,6 +460,10 @@ impl JobStore {
                         j.eta = None;
                         j.ended_at = Some(now_ms());
                     });
+                    store.push_log(
+                        &jid,
+                        if cancelled { "任务已取消".to_string() } else { format!("任务失败：{e}") },
+                    );
                 }
                 Err(join_err) => {
                     store.update(&jid, |j| {
@@ -439,6 +471,7 @@ impl JobStore {
                         j.error = Some(format!("下载线程崩溃: {join_err}"));
                         j.ended_at = Some(now_ms());
                     });
+                    store.push_log(&jid, format!("下载线程崩溃：{join_err}"));
                 }
             }
             if let Ok(mut m) = store.cancel.lock() {

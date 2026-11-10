@@ -112,6 +112,10 @@ export interface Job {
   output: string | null;
   fileName: string | null;
   error: string | null;
+  /** 播放列表里当前正在下第几项（单视频为 null） */
+  playlistIndex: number | null;
+  /** 播放列表总项数（单视频为 null） */
+  playlistCount: number | null;
   createdAt: number;
   endedAt: number | null;
 }

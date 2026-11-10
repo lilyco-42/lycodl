@@ -47,6 +47,10 @@ pub struct Job {
     pub output: Option<String>,
     pub file_name: Option<String>,
     pub error: Option<String>,
+    /// 播放列表里当前是第几项（单视频为 null）
+    pub playlist_index: Option<u64>,
+    /// 播放列表总项数（单视频为 null）
+    pub playlist_count: Option<u64>,
     /// 毫秒时间戳（前端按 >1e12 视为毫秒，两可）
     pub created_at: u64,
     pub ended_at: Option<u64>,
@@ -209,6 +213,8 @@ impl JobStore {
             output: None,
             file_name: None,
             error: None,
+            playlist_index: None,
+            playlist_count: None,
             created_at: now_ms(),
             ended_at: None,
         };
@@ -253,9 +259,18 @@ impl JobStore {
             let j2 = jid.clone();
             let result = tokio::task::spawn_blocking(move || {
                 ytdlp::download_blocking(&opts, flag.clone(), |ev| match ev {
-                    Event::Title(t) => s2.update(&j2, |j| {
-                        if j.title.is_empty() {
-                            j.title = t;
+                    Event::Title {
+                        index,
+                        count,
+                        title,
+                    } => s2.update(&j2, |j| {
+                        // 播放列表：标题始终跟着「当前这一项」走，让人看到正在下哪个
+                        j.title = title;
+                        if index.is_some() {
+                            j.playlist_index = index;
+                        }
+                        if count.is_some() {
+                            j.playlist_count = count;
                         }
                     }),
                     Event::Prog {
@@ -263,17 +278,35 @@ impl JobStore {
                         total,
                         speed,
                         eta,
+                        index,
                     } => s2.update(&j2, |j| {
+                        if index.is_some() {
+                            j.playlist_index = index;
+                        }
                         j.downloaded_bytes = downloaded;
                         j.total_bytes = total;
                         j.speed = speed;
                         j.eta = eta;
-                        j.percent = match total {
-                            Some(t) if t > 0 => {
-                                ((downloaded as f64 / t as f64) * 100.0 * 10.0).round() / 10.0
-                            }
-                            _ => j.percent,
+                        let item = match total {
+                            Some(t) if t > 0 => (downloaded as f64 / t as f64).clamp(0.0, 1.0),
+                            _ => 0.0,
                         };
+                        // 播放列表按「已完成项 + 当前项进度」折算整体百分比，
+                        // 否则每换一项进度条就从 100% 掉回 0%，看不出整体推进。
+                        // 再取 max：yt-dlp 在换项瞬间会吐出 total=NA 的残留行（download 还是上一项的字节数），
+                        // 不夹住的话整体进度会突然往回掉。
+                        let is_playlist = matches!((index, j.playlist_count), (Some(_), Some(n)) if n > 0);
+                        let cand = match (index, j.playlist_count) {
+                            (Some(i), Some(n)) if n > 0 => {
+                                let done = (i.saturating_sub(1)) as f64;
+                                (((done + item) / n as f64) * 100.0 * 10.0).round() / 10.0
+                            }
+                            _ => match total {
+                                Some(t) if t > 0 => (item * 100.0 * 10.0).round() / 10.0,
+                                _ => j.percent,
+                            },
+                        };
+                        j.percent = if is_playlist { j.percent.max(cand) } else { cand };
                     }),
                     Event::File(p) => {
                         let pb = PathBuf::from(&p);

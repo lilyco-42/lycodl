@@ -124,12 +124,13 @@ fn run_download(app: &DownloadCmd, ctx: &Context) -> Result<Value, AppError> {
     let file = ytdlp::download_blocking(&opts, cancel, |ev| {
         let _ = &cancel_for_sink;
         match ev {
-            Event::Title(t) => ctx.log(LogLevel::Info, format!("标题: {t}")),
+            Event::Title { title, .. } => ctx.log(LogLevel::Info, format!("标题: {title}")),
             Event::Prog {
                 downloaded,
                 total,
                 speed,
                 eta,
+                ..
             } => {
                 let pct = match total {
                     Some(t) if t > 0 => downloaded as f64 / t as f64 * 100.0,

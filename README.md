@@ -102,6 +102,29 @@ lycodl download --url <视频页> --mode custom --format-id 137
 
 前端构建产物通过 `include_dir!` 编进二进制，单个可执行文件即可运行（health 里的 `webMode` 会显示 `embedded`）。
 
+## 播放列表
+
+粘贴播放列表链接（例如 `https://www.youtube.com/playlist?list=...`）解析时，解析卡片会显示「共 N 个条目」和条目清单；下方「下载整个播放列表」开关默认打开。关掉它只下当前这一条。
+
+批量下载时进度条显示的是**整体进度**，不是当前这一项的进度：
+
+- 后端从 `--progress-template` 里带出 `%(info.playlist_index)s`，从 `--print before_dl:` 里带出 `%(playlist_index)s` / `%(n_entries)s`；
+- 整体百分比 = `(当前项序号 - 1 + 当前项进度) / 总条目数`，所以换项时不会从 100% 掉回 0%；
+- 播放列表这条路径上百分比单调不回退（取 max），因为 yt-dlp 换项瞬间会吐出 `total=NA` 的残留进度行，不夹住就会看到进度往回跳；
+- 任务卡片上会多一个「第 3 / 182 项」徽章，标题也跟着换成正在下哪一条。
+
+单视频时这些模板字段都是字面量 `NA`，解析成 `None`，走原来的整条进度逻辑。
+
+## 取消任务
+
+`POST /api/jobs/{id}/cancel` 置取消标志，下载线程以 200ms 为周期轮询（读 stdout 走独立线程，播放列表换项时 yt-dlp 会安静几十秒，不能阻塞在读管道上）。
+
+真正要注意的是**怎么杀**：yt-dlp 官方 linux 包是 PyInstaller 单文件，启动后父进程会再 fork 出一个真身。只 `kill` 父进程的话，真身会变成孤儿继续下载，而且还握着 stdout 管道，读线程永远等不到 EOF —— 任务就卡在 running 上，返回的 `{ok:true}` 看起来像在撒谎。
+
+所以 spawn 时用 `libc::setsid()` 让内核进程独立成组，取消时按**进程组**发 `SIGKILL`（`kill(-pid)`）。实测播放列表任务取消后 544ms 内落定为 `cancelled`，`pgrep -xc yt-dlp` 归零。
+
+
+
 ## 配置
 
 优先级：环境变量 > `~/.config/lycodl/settings.json` > 默认值。Web 设置页写的就是这个文件。

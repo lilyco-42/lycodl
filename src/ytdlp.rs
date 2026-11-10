@@ -408,12 +408,19 @@ pub struct DownloadOpts {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Title(String),
+    /// 一项开始前的标题；播放列表里带「第几项 / 共几项」
+    Title {
+        index: Option<u64>,
+        count: Option<u64>,
+        title: String,
+    },
     Prog {
         downloaded: i64,
         total: Option<i64>,
         speed: Option<f64>,
         eta: Option<i64>,
+        /// 进度行所属的播放列表序号（单视频为 None）
+        index: Option<u64>,
     },
     File(String),
     Log(String),
@@ -453,9 +460,10 @@ pub fn build_args(o: &DownloadOpts) -> Vec<String> {
         "--no-color".into(),
         "--progress".into(),
         "--progress-template".into(),
-        "download:LYCOPROG|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s".into(),
+        // 末尾两个字段是播放列表序号：单视频时 yt-dlp 会打印 NA，解析成 None
+        "download:LYCOPROG|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s|%(info.playlist_index)s".into(),
         "--print".into(),
-        "before_dl:LYCOTITLE %(title)s".into(),
+        "before_dl:LYCOTITLE|%(playlist_index)s|%(n_entries)s|%(title)s".into(),
         "--print".into(),
         "after_move:LYCOFILE %(filepath)s".into(),
         "--no-warnings".into(),
@@ -506,6 +514,17 @@ fn num_or_none(v: &str) -> Option<f64> {
     }
 }
 
+/// 杀掉整棵 yt-dlp 进程组（含 PyInstaller 再 fork 出来的真身）。
+fn kill_tree(child: &mut std::process::Child) {
+    let pid = child.id() as i32;
+    unsafe {
+        // 进程组 id == setsid 后的 pid，负数表示「发给整个组」
+        libc::kill(-pid, libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// 跑一次下载，逐行把事件喂给 sink。返回最终文件路径（拿不到则空串）。
 ///
 /// cancel 置位后杀子进程并返回 Err("已取消")。
@@ -521,13 +540,22 @@ where
         args.iter().filter(|a| !a.starts_with("LYCO")).cloned().collect::<Vec<_>>().join(" ")
     )));
 
-    let mut child = Command::new(&kernel.path)
-        .args(&args)
+    let mut cmd = Command::new(&kernel.path);
+    cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动 yt-dlp 失败: {e}"))?;
+        .stderr(Stdio::piped());
+    // yt-dlp 官方 linux 包是 PyInstaller 单文件：启动后父进程会再 fork 一个真身。
+    // 只 kill 父进程会留下孤儿继续下载、并且还握着 stdout 管道 —— 读线程永远等不到 EOF。
+    // 所以把它放进独立进程组，取消时按组杀。
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("启动 yt-dlp 失败: {e}"))?;
 
     let stderr = child.stderr.take().expect("stderr piped");
     let errbuf: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -549,25 +577,49 @@ where
         }
     });
 
+    // 读 stdout 必须丢到独立线程：播放列表换项时 yt-dlp 会安静几十秒（在解析下一项），
+    // 主线程如果直接阻塞在 read_line 上，就检查不到 cancel 标志 —— 实测取消能拖到两分钟。
     let stdout = child.stdout.take().expect("stdout piped");
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
+    let (ltx, lrx) = std::sync::mpsc::channel::<String>();
+    let reader_thread = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if ltx.send(line.clone()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
     let mut final_file = String::new();
     let mut cancelled = false;
 
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
+        let raw = match lrx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(l) => l,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    kill_tree(&mut child);
+                    break;
+                }
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         if cancel.load(Ordering::Relaxed) {
             cancelled = true;
-            let _ = child.kill();
+            kill_tree(&mut child);
             break;
         }
-        let t = line.trim_end();
+        let t = raw.trim_end();
         if let Some(rest) = t.strip_prefix("LYCOPROG|") {
             let parts: Vec<&str> = rest.split('|').collect();
             if parts.len() >= 4 {
@@ -575,17 +627,29 @@ where
                 let total = num_or_none(parts[1]).map(|v| v as i64);
                 let speed = num_or_none(parts[2]);
                 let eta = num_or_none(parts[3]).map(|v| v as i64);
+                let index = parts.get(4).and_then(|v| num_or_none(v)).map(|v| v as u64);
                 sink(Event::Prog {
                     downloaded,
                     total,
                     speed,
                     eta,
+                    index,
                 });
             }
-        } else if let Some(rest) = t.strip_prefix("LYCOTITLE ") {
-            let title = rest.trim();
-            if !title.is_empty() && title != "NA" {
-                sink(Event::Title(title.to_string()));
+        } else if let Some(rest) = t.strip_prefix("LYCOTITLE|") {
+            // LYCOPROG 的字段顺序是 fixed，所以这里也按 | 切
+            let f: Vec<&str> = rest.splitn(3, '|').collect();
+            if f.len() == 3 {
+                let index = num_or_none(f[0]).map(|v| v as u64);
+                let count = num_or_none(f[1]).map(|v| v as u64);
+                let title = f[2].trim();
+                if !title.is_empty() && title != "NA" {
+                    sink(Event::Title {
+                        index,
+                        count,
+                        title: title.to_string(),
+                    });
+                }
             }
         } else if let Some(rest) = t.strip_prefix("LYCOFILE ") {
             let p = rest.trim();
@@ -600,9 +664,16 @@ where
 
     let status = child.wait().map_err(|e| format!("等待 yt-dlp 结束失败: {e}"))?;
     let _ = err_thread.join();
+    // 取消的场合已经 kill_tree 过：此时管道写端可能还被祖孙进程短暂握着，
+    // 硬等读线程会让「取消」看起来像卡住 —— 直接放手，让它自己收尾。
+    if cancelled {
+        drop(reader_thread);
+        return Err("已取消".into());
+    }
+    let _ = reader_thread.join();
     let errors = errbuf.lock().map(|b| b.clone()).unwrap_or_default();
 
-    if cancelled || cancel.load(Ordering::Relaxed) {
+    if cancel.load(Ordering::Relaxed) {
         return Err("已取消".into());
     }
     if !status.success() {

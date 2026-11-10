@@ -193,6 +193,12 @@ function JobCard({ job, cancelling, onCancel, onReveal }: JobCardProps) {
         </CardTitle>
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <Badge variant="outline">{MODE_LABEL[job.mode] ?? job.mode}</Badge>
+          {job.playlistIndex !== null ? (
+            <Badge variant="secondary">
+              第 {job.playlistIndex}
+              {job.playlistCount !== null ? " / " + job.playlistCount : ""} 项
+            </Badge>
+          ) : null}
           <span className="inline-flex items-center gap-1">
             <Clock className="size-3" />
             {formatDateTime(job.createdAt)}

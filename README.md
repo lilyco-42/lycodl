@@ -123,6 +123,8 @@ lycodl download --url <视频页> --mode custom --format-id 137
 
 所以 spawn 时用 `libc::setsid()` 让内核进程独立成组，取消时按**进程组**发 `SIGKILL`（`kill(-pid)`）。实测播放列表任务取消后 544ms 内落定为 `cancelled`，`pgrep -xc yt-dlp` 归零。
 
+被 SIGKILL 的 yt-dlp 来不及自己清理，会留下 `*.f397.mp4.part` 之类的半成品。所以下载开始时会用 `--print before_dl:"LYCOBASE %(filename)s"` 记下这次的目标基名，取消成功后按这个前缀清掉 `.part` / `.ytdl` / `.temp` / `.frag` 文件（视频轨、音频轨都点得到）。**只有取消才清**——非取消的失败留着半成品，下次下同一条还能续传。
+
 
 
 ## 配置

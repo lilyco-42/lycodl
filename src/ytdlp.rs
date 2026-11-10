@@ -465,6 +465,10 @@ pub fn build_args(o: &DownloadOpts) -> Vec<String> {
         "--print".into(),
         "before_dl:LYCOTITLE|%(playlist_index)s|%(n_entries)s|%(title)s".into(),
         "--print".into(),
+        // before_dl 阶段就有 %(filename)s：不含扩展名的完整输出路径。
+        // 取消时要按这个基名去清掉 *.part / *.ytdl 半成品（SIGKILL 来不及让 yt-dlp 自己清）
+        "before_dl:LYCOBASE %(filename)s".into(),
+        "--print".into(),
         "after_move:LYCOFILE %(filepath)s".into(),
         "--no-warnings".into(),
         "--concurrent-fragments".into(),
@@ -523,6 +527,44 @@ fn kill_tree(child: &mut std::process::Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// 取消后清掉这次下载留下的半成品（*.part / *.ytdl / *.temp / 分段 *.part-FragN）。
+/// 失败（非取消）不清，留着让 yt-dlp 下次续传。
+fn cleanup_partial(base: &str) -> usize {
+    let pb = std::path::Path::new(base);
+    let dir = match pb.parent() {
+        Some(d) => d.to_path_buf(),
+        None => return 0,
+    };
+    let name = match pb.file_name() {
+        Some(n) => n.to_string_lossy().to_string(),
+        None => return 0,
+    };
+    // %(filename)s 带扩展名（.webm / .f397.mp4 等），去掉最后一截再当前缀：
+    // 这样视频轨的 xxx.f397.mp4.part 和音频轨的 xxx.m4a.part 都能一并点到。
+    let stem = match name.rfind('.') {
+        Some(i) if i > 0 => name[..i].to_string(),
+        _ => name.clone(),
+    };
+    let prefix = format!("{stem}.");
+    let mut n = 0;
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.starts_with(&prefix) {
+                continue;
+            }
+            let is_partial = name.contains(".part")
+                || name.ends_with(".ytdl")
+                || name.ends_with(".temp")
+                || name.ends_with(".frag");
+            if is_partial && std::fs::remove_file(e.path()).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 /// 跑一次下载，逐行把事件喂给 sink。返回最终文件路径（拿不到则空串）。
@@ -599,6 +641,7 @@ where
     });
 
     let mut final_file = String::new();
+    let mut current_base: Option<String> = None;
     let mut cancelled = false;
 
     loop {
@@ -651,6 +694,11 @@ where
                     });
                 }
             }
+        } else if let Some(rest) = t.strip_prefix("LYCOBASE ") {
+            let b = rest.trim();
+            if !b.is_empty() && b != "NA" {
+                current_base = Some(b.to_string());
+            }
         } else if let Some(rest) = t.strip_prefix("LYCOFILE ") {
             let p = rest.trim();
             if !p.is_empty() && p != "NA" {
@@ -668,6 +716,12 @@ where
     // 硬等读线程会让「取消」看起来像卡住 —— 直接放手，让它自己收尾。
     if cancelled {
         drop(reader_thread);
+        if let Some(b) = &current_base {
+            let n = cleanup_partial(b);
+            if n > 0 {
+                sink(Event::Log(format!("已取消，清理 {n} 个未完成的临时文件")));
+            }
+        }
         return Err("已取消".into());
     }
     let _ = reader_thread.join();

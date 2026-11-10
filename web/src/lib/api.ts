@@ -277,6 +277,13 @@ export const api = {
 
   listFiles: () => request<FilesResponse>("/api/files"),
 
+  // 让系统文件管理器定位到该文件；失败时前端退回「复制路径」
+  reveal: (path: string) =>
+    request<{ ok: true; via: "filemanager" | "directory"; dir: string }>(
+      "/api/reveal",
+      { method: "POST", body: JSON.stringify({ path }) },
+    ),
+
   listCommands: () => request<CommandsResponse>("/api/commands"),
 };
 

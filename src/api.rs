@@ -121,6 +121,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs/{id}/cancel", post(cancel_job))
         .route("/api/jobs/{id}/logs", get(job_logs))
         .route("/api/files", get(list_files))
+        .route("/api/reveal", post(reveal))
         .route("/api/files/{name}", get(serve_file))
         .route("/api/commands", get(list_commands))
         .with_state(state)
@@ -417,6 +418,88 @@ async fn list_files(State(st): State<AppState>) -> Result<Json<Value>, ApiError>
         bm.cmp(&am)
     });
     Ok(Json(json!({ "files": items })))
+}
+
+// ── 在系统文件管理器里定位 ─────────────────────────────────────
+
+/// 只允许定位输出目录里的东西，避免变成一个任意路径的「打开」原语
+async fn reveal(
+    State(st): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let raw = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if raw.is_empty() {
+        return Err(ApiError::bad("缺少 path"));
+    }
+    let s = st.snapshot();
+    let root = settings::ensure_output_dir(&s).map_err(ApiError::bad)?;
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    let target = PathBuf::from(&raw);
+    let target = std::fs::canonicalize(&target).unwrap_or(target);
+    if !target.starts_with(&root) {
+        return Err(ApiError::bad(format!(
+            "只能定位输出目录内的文件: {}",
+            root.display()
+        )));
+    }
+    let dir = if target.is_dir() {
+        target.clone()
+    } else {
+        target
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| root.clone())
+    };
+    // 两条路都走不通才算失败，让前端退回复制路径 —— 别假装打开了
+    let how = open_in_file_manager(&target, &dir)
+        .ok_or_else(|| ApiError::bad("无法拉起文件管理器（可能没有图形会话）"))?;
+    Ok(Json(json!({
+        "ok": true,
+        "via": how,
+        "dir": dir.display().to_string(),
+    })))
+}
+
+/// 优先用 FileManager1 让文件管理器「选中」文件，退而打开所在目录
+fn open_in_file_manager(target: &std::path::Path, dir: &std::path::Path) -> Option<&'static str> {
+    let uri = format!("file://{}", target.display());
+    let items = format!("[\"{uri}\"]");
+    // FileManager1 是 KDE / GNOME 都实现的约定，比猜 Nautilus/Dolphin 的参数靠谱
+    let dbus = std::process::Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.FileManager1",
+            "--object-path",
+            "/org/freedesktop/FileManager1",
+            "--method",
+            "org.freedesktop.FileManager1.ShowItems",
+            &items,
+            "",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if dbus {
+        return Some("filemanager");
+    }
+    // FileManager1 不可用（非 KDE/GNOME 或没装 dbus 工具）就退一步，只打开目录
+    std::process::Command::new("xdg-open")
+        .arg(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+        .map(|_| "directory")
 }
 
 async fn serve_file(State(st): State<AppState>, Path(name): Path<String>) -> Result<Response, ApiError> {

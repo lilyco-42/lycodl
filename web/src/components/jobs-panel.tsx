@@ -22,6 +22,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorAlert } from "@/components/error-alert";
+import { api } from "@/lib/api";
 import type { Job, JobStatus } from "@/lib/api";
 import { errorMessage } from "@/lib/api";
 import { clampPercent, formatBytes, formatDateTime, formatEta, formatSpeed } from "@/lib/format";
@@ -74,10 +75,27 @@ export function JobsPanel() {
   }
 
   async function handleReveal(job: Job) {
-    const path = job.output ?? job.fileName;
+    const dir = job.output;
+    const name = job.fileName;
+    // output 是目录、fileName 是文件名，拼成完整路径才能让文件管理器「选中」它
+    const path =
+      dir !== null && dir !== "" && name !== null && name !== ""
+        ? dir.replace(/\/+$/, "") + "/" + name
+        : (dir ?? name);
     if (path === null || path === "") {
       toast.error("该任务没有输出路径");
       return;
+    }
+    // 先请后端拉起系统文件管理器；拉不起来（无桌面会话 / 非本机）就退回复制路径
+    try {
+      const r = await api.reveal(path);
+      toast.success(
+        r.via === "filemanager" ? "已在文件管理器中定位" : "已打开所在目录",
+        { description: r.dir },
+      );
+      return;
+    } catch {
+      /* 落到复制 */
     }
     const ok = await copyText(path);
     if (ok) {

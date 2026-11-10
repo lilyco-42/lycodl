@@ -73,22 +73,32 @@ systemctl --user enable --now lycodl.service
 
 | 命令 | 分级 | 说明 |
 | --- | --- | --- |
-| `probe <url>` | T0 只读 | 解析链接，列出可用格式（不下载） |
-| `formats <url>` | T0 只读 | 人类可读的格式表 |
+| `probe --url <url>` | T0 只读 | 解析链接，列出可用格式（不下载） |
+| `formats --url <url>` | T0 只读 | 人类可读的格式表 |
 | `files` | T0 只读 | 列出输出目录里的成品文件 |
 | `kernel` | T0 只读 | 当前内核路径 / 版本 / 来源（managed 还是 system） |
 | `settings` | T0 只读 | 查看当前配置 |
-| `download <url>` | T1 需确认 | 下载，进度实时上报 |
+| `download --url <url>` | T1 需确认 | 下载，进度实时上报 |
 | `kernel-update` | T1 需确认 | 从 GitHub 拉最新 yt-dlp 覆盖托管副本（热更新） |
 | `settings-set` | T1 需确认 | 修改配置 |
 
-`lycodl --schema` 输出全部命令的 JSON Schema，`--help` 看人类可读版本。
+所有参数都是显式长选项（lilyco 生成的命令面统一用 `--name` 形式，没有位置参数），例如：
+
+```bash
+lycodl formats  --url https://www.youtube.com/watch?v=jNQXAC9IVRw
+lycodl download --url https://www.bilibili.com/video/BV1GJ411x7h7 --mode audio
+lycodl download --url <视频页> --mode custom --format-id 137
+```
+
+`lycodl --schema` 输出全部命令的 JSON Schema，`--help` 看人类可读版本；每个子命令还支持 `--json` / `--openai-tool` / `--anthropic-tool` / `--gemini-tool` 等机器可读输出，方便直接塞给 LLM 当工具定义。
 
 内核巡检是后台做的：服务启动时以及之后每 6 小时问一次 GitHub，把最新版本号缓存在内存里，所以设置页一打开就能看到「最新版本」，不用手点「检查更新」。更新是**幂等**的 —— 已经是最新版就直接返回 `alreadyLatest: true`，不会白拉 41 MB；要强制重装设 `LYCODL_KERNEL_FORCE=1`。
 
 ## 网页控制台
 
-五个页签：**下载**（粘贴链接 → 解析 → 选模式/画质 → 提交）、**任务**（SSE 实时进度、取消）、**文件**（成品列表、直接下载）、**设置**（输出目录、浏览器 Cookie、代理、并发数、内核更新）、**命令（AI）**（把注册表当工具签名展示，可复制 CLI 用法给 AI）。
+五个页签：**下载**（粘贴链接 → 解析 → 选模式/画质 → 提交）、**任务**（SSE 实时进度、取消）、**文件**（成品列表、直接下载、定位到文件夹）、**设置**（输出目录、浏览器 Cookie、代理、并发数、内核更新）、**命令（AI）**（把注册表当工具签名展示，可复制 CLI 用法给 AI）。
+
+「定位」走的是 `POST /api/reveal`：后端用 D-Bus 的 `org.freedesktop.FileManager1.ShowItems` 让 Dolphin / Nautilus 直接**选中**那个文件（实测拉起 `dolphin --select <路径>`），拉不起来就退一步 `xdg-open` 打开所在目录，再不行前端退回「复制路径到剪贴板」。该接口只允许定位输出目录内的路径，不能拿来当任意文件的打开原语。
 
 前端构建产物通过 `include_dir!` 编进二进制，单个可执行文件即可运行（health 里的 `webMode` 会显示 `embedded`）。
 

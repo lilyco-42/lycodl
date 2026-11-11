@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorAlert } from "@/components/error-alert";
 import { errorMessage } from "@/lib/api";
@@ -21,6 +22,15 @@ import { useSettings } from "@/hooks/useSettings";
 import { useYtDlp } from "@/hooks/useYtDlp";
 
 const NO_COOKIE = "__none__";
+
+/** 空串 / "none" 都视作关闭，统一发 null，别让后端存一个没意义的字符串。 */
+function normalizeEndpoint(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed.toLowerCase() === "none") {
+    return null;
+  }
+  return trimmed;
+}
 const NO_IMP = "__none__";
 
 const IMPERSONATE_OPTIONS: Array<{ value: string; label: string }> = [
@@ -48,6 +58,8 @@ export function SettingsPanel() {
   const [proxy, setProxy] = useState("");
   const [concurrency, setConcurrency] = useState("1");
   const [impersonate, setImpersonate] = useState<string>(NO_IMP);
+  const [browserBridge, setBrowserBridge] = useState(false);
+  const [flaresolverrEndpoint, setFlaresolverrEndpoint] = useState("");
 
   useEffect(() => {
     if (settings === null) {
@@ -58,6 +70,8 @@ export function SettingsPanel() {
     setProxy(settings.proxy ?? "");
     setConcurrency(String(settings.concurrency));
     setImpersonate(settings.impersonate ?? NO_IMP);
+    setBrowserBridge(settings.browserBridge ?? false);
+    setFlaresolverrEndpoint(settings.flaresolverrEndpoint ?? "");
   }, [settings]);
 
   async function handleSave() {
@@ -74,6 +88,8 @@ export function SettingsPanel() {
         proxy: proxy.trim() === "" ? null : proxy.trim(),
         concurrency: parsedConcurrency,
         impersonate: impersonate === NO_IMP ? null : impersonate,
+        browserBridge,
+        flaresolverrEndpoint: normalizeEndpoint(flaresolverrEndpoint),
       });
       const running = result.running ?? 0;
       if (parsedConcurrency < prevConcurrency && running > parsedConcurrency) {
@@ -188,6 +204,49 @@ export function SettingsPanel() {
                 <p className="text-xs text-muted-foreground">
                   部分站点有 Cloudflare 防护，遇到 403 再开启。
                 </p>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">直链兜底</p>
+                  <p className="text-xs text-muted-foreground">
+                    提取器全部失败时，前端会把「代取页面挖到的直链」带给后端下载。下面两种方式都是可选增强，默认都关闭。
+                  </p>
+                </div>
+
+                <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="browser-bridge" className="cursor-pointer">
+                      浏览器桥
+                    </Label>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      开启后，解析失败时会起一个本机 chromium 代开页面，导出 Cookie 并嗅探真实在播的直链。
+                      默认关闭；每次解析失败都会多起一个浏览器，约多花十几秒。本机 chromium 解不了
+                      Cloudflare 的 JS challenge，CF 站点请用下面的 FlareSolverr。
+                    </p>
+                  </div>
+                  <Switch id="browser-bridge" checked={browserBridge} onCheckedChange={setBrowserBridge} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="flaresolverr-endpoint">FlareSolverr 地址</Label>
+                  <Input
+                    id="flaresolverr-endpoint"
+                    value={flaresolverrEndpoint}
+                    onChange={(event) => setFlaresolverrEndpoint(event.target.value)}
+                    placeholder="http://127.0.0.1:8191"
+                    className="font-mono text-xs"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    留空或填 none 表示不启用。需要自己用 docker 跑一个 FlareSolverr 容器。
+                    它只用来代取页面 HTML 挖直链；cf_clearance 绑定 IP + TLS 指纹，把 cookie 搬给
+                    yt-dlp 无效。
+                  </p>
+                </div>
               </div>
 
               <div className="flex justify-end">

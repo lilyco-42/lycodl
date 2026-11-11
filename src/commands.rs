@@ -29,6 +29,8 @@ fn run_probe(app: &ProbeCmd, ctx: &Context) -> Result<Value, AppError> {
         cookies_from_browser: s.cookies_from_browser.clone(),
         proxy: s.proxy.clone(),
         impersonate: s.impersonate.clone(),
+        browser_bridge: s.browser_bridge,
+        flaresolverr: s.flaresolverr_endpoint.clone(),
     })
     .map_err(AppError::Runtime)?;
     let info = outcome.info;
@@ -45,6 +47,7 @@ fn run_probe(app: &ProbeCmd, ctx: &Context) -> Result<Value, AppError> {
     if let Some(obj) = out.as_object_mut() {
         obj.insert("site".into(), json!(site));
         obj.insert("strategy".into(), json!(outcome.strategy));
+        obj.insert("direct".into(), json!(outcome.direct));
     }
     ctx.done(out.clone(), 0);
     Ok(out)
@@ -64,6 +67,8 @@ fn run_formats(app: &FormatsCmd, ctx: &Context) -> Result<Value, AppError> {
         cookies_from_browser: s.cookies_from_browser.clone(),
         proxy: s.proxy.clone(),
         impersonate: s.impersonate.clone(),
+        browser_bridge: s.browser_bridge,
+        flaresolverr: s.flaresolverr_endpoint.clone(),
     })
     .map_err(AppError::Runtime)?
     .info;
@@ -134,6 +139,8 @@ fn run_download(app: &DownloadCmd, ctx: &Context) -> Result<Value, AppError> {
         cookies_from_browser: s.cookies_from_browser.clone(),
         proxy: s.proxy.clone(),
         impersonate: s.impersonate.clone(),
+        direct: None,
+        direct_title: None,
     };
 
     ctx.log(LogLevel::Info, format!("输出目录: {}", out_dir.display()));

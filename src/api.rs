@@ -184,6 +184,15 @@ async fn put_settings(
             _ => None,
         };
     }
+    if let Some(v) = patch.get("browserBridge").and_then(|v| v.as_bool()) {
+        next.browser_bridge = v;
+    }
+    if let Some(v) = patch.get("flaresolverrEndpoint") {
+        next.flaresolverr_endpoint = match v.as_str() {
+            Some(s) if !s.trim().is_empty() && s.trim() != "none" => Some(s.trim().to_string()),
+            _ => None,
+        };
+    }
 
     settings::save(&next).map_err(ApiError::internal)?;
     settings::ensure_output_dir(&next).map_err(ApiError::bad)?;
@@ -281,6 +290,8 @@ async fn probe(State(st): State<AppState>, Json(req): Json<ProbeReq>) -> Result<
         cookies_from_browser: s.cookies_from_browser.clone(),
         proxy: s.proxy.clone(),
         impersonate: s.impersonate.clone(),
+        browser_bridge: s.browser_bridge,
+        flaresolverr: s.flaresolverr_endpoint.clone(),
     };
     let outcome = tokio::task::spawn_blocking(move || ytdlp::probe(&opts))
         .await
@@ -293,6 +304,8 @@ async fn probe(State(st): State<AppState>, Json(req): Json<ProbeReq>) -> Result<
         "info": outcome.info,
         "site": site,
         "strategy": outcome.strategy,
+        // 有值说明 extractor 没走通，但浏览器里看到了真实在播的流
+        "direct": outcome.direct,
     })))
 }
 
@@ -310,6 +323,11 @@ struct DownloadReq {
     format_id: Option<String>,
     #[serde(default)]
     playlist: bool,
+    /// 前端把解析时拿到的直链原样带回来（extractor 全挂时的兜底）
+    #[serde(default)]
+    direct: Option<ytdlp::DirectMedia>,
+    #[serde(default)]
+    direct_title: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -339,6 +357,8 @@ async fn download(State(st): State<AppState>, Json(req): Json<DownloadReq>) -> R
             quality: req.quality,
             format_id: req.format_id,
             playlist: req.playlist,
+            direct: req.direct,
+            direct_title: req.direct_title,
             settings: st.snapshot(),
         })
         .map_err(ApiError::bad)?;

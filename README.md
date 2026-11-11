@@ -96,7 +96,7 @@ lycodl download --url <视频页> --mode custom --format-id 137
 
 ## 网页控制台
 
-六个页签：**下载**（粘贴链接 → 解析 → 选模式/画质 → 提交）、**任务**（SSE 实时进度、取消、重试、日志）、**文件**（成品列表、直接下载、定位到文件夹）、**设置**（输出目录、浏览器 Cookie、代理、并发数、指纹伪装、内核更新）、**平台**（运行环境自检、主流站点目录、提取器搜索）、**命令（AI）**（把注册表当工具签名展示，可复制 CLI 用法给 AI）。
+六个页签：**下载**（粘贴链接 → 解析 → 选模式/画质 → 提交）、**任务**（SSE 实时进度、取消、重试、日志）、**文件**（成品列表、直接下载、定位到文件夹）、**设置**（输出目录、浏览器 Cookie、代理、并发数、指纹伪装、直链兜底、内核更新）、**平台**（运行环境自检、主流站点目录、提取器搜索）、**命令（AI）**（把注册表当工具签名展示，可复制 CLI 用法给 AI）。
 
 「定位」走的是 `POST /api/reveal`：后端用 D-Bus 的 `org.freedesktop.FileManager1.ShowItems` 让 Dolphin / Nautilus 直接**选中**那个文件（实测拉起 `dolphin --select <路径>`），拉不起来就退一步 `xdg-open` 打开所在目录，再不行前端退回「复制路径到剪贴板」。该接口只允许定位输出目录内的路径，不能拿来当任意文件的打开原语。
 
@@ -120,7 +120,7 @@ yt-dlp 认识 1398 个站点提取器（`--list-extractors` 实测 1755 行，�
 
 同一站点最多试 4 次（YouTube 因为多一条备用播放客户端，计划里会排到 5 条，但同样封顶 4 次）。**成功的策略会按站点记进 `~/.config/lycodl/strategies.json`**，下次同站直接先走那条路 —— 平台页的卡片上会显示「已记录策略：自动取本机浏览器 Cookie」。如果错误本身跟环境无关（`Unsupported URL`、`404`、直播已结束），立刻停下，不做无意义的重复尝试。
 
-需要说清楚的一点：**指纹伪装不是万能药**。实测对 dailymotion / vimeo / 小红书 / 微博 / reddit / 抖音这六个疑难站点，开不开伪装结果完全一致（都是站点侧的登录 / 风控要求）。它只对「Cloudflare 前置拦截」这类场景有用，所以默认关着、只当兜底，不默认开启。
+需要说清楚的一点：**指纹伪装不是万能药**。实测对 dailymotion / vimeo / 小红书 / 微博 / reddit / 抖音这六个疑难站点，开不开伪装结果完全一致（都是站点侧的登录 / 风控要求）。它只对「Cloudflare 前置拦截」这类场景有用，所以默认关着、只当兜底，不默认开启。更硬的反爬（Cloudflare JS challenge、需要真实浏览器渲染的页面、上游提取器本身坏掉）走下面 [反爬与直链兜底](#反爬与直链兜底)。
 
 **三、失败信息直接给下一步动作。** `friendly_error` 现在覆盖 20 类上游报错，每一条都翻译成中文并指明操作：`Fresh cookies are needed`（选个最近开过该站的浏览器）、`Account authentication is required`（要已登录的 Cookie）、`geo restriction`（填代理）、`Unable to extract`（内核要更新）、`No video formats found`（三种可能原因分别列出）……解析全失败时还会附上「已尝试 4 种方式：默认配置（失败）→ 自动取本机浏览器 Cookie（失败）→ …」，一眼能看出卡在哪一步。
 
@@ -134,6 +134,39 @@ yt-dlp 认识 1398 个站点提取器（`--list-extractors` 实测 1755 行，�
 - **上游本身限制**（不是本项目 bug）：优酷错误码 6004、爱奇艺 `Can't find any video`、酷我 `Unable to extract song name`、虎牙直播离线、斗鱼直播源 404、快手根本没有对应提取器。
 
 站点目录（`GET /api/sites`，36 个主流站点）里每个站点都带 `status` 与中文 `tips`，告诉你它属于上面哪一档、以及要配什么才能下。
+
+## 反爬与直链兜底
+
+把话说在前面：没有哪个开关能「伪装浏览器」后通杀所有站点。实测里我们否掉了几条看似合理的路：
+
+- **把 FlareSolverr 解出的 `cf_clearance` 喂给 yt-dlp / `curl` / `--impersonate` 全部仍是 403** —— Cloudflare 的放行 Cookie 绑定「IP + 该客户端 TLS/JA3 指纹」，换个客户端就不认。拿 Cookie 没用，得让它**代取页面**；
+- 本机 Chromium 无论有头（`DISPLAY=:0`）还是无头，都过不了 pexels / spankbang 的 CF JS challenge（20 秒后标题仍是「Just a moment...」）；
+- CDP Cookie 桥对抖音 / 小红书 / reddit / vimeo 无改善 —— 前两个是 yt-dlp 上游提取器缺陷（[#9667](https://github.com/yt-dlp/yt-dlp/issues/9667) / [#16519](https://github.com/yt-dlp/yt-dlp/issues/16519)），后两个是真·登录墙；
+- `--impersonate chrome` 对上述六个疑难站点与不开的结果完全一致，它只该在 403 时兜底，不能默认开启。
+- **PO Token provider（bgutil）也救不了 bot check** —— 本机起 HTTP provider（`/get_pot` 能返回 `poToken`）、装好 yt-dlp 插件后，不带 Cookie 解析 YouTube 仍是 `Sign in to confirm you’re not a bot`；POT 是给已通过身份校验的会话补令牌，不是绕过身份校验本身。所以没把它做进降级链。
+
+所以正确解法是**绕开解析失败的提取器，直接拿到媒体直链**，再交给 yt-dlp 当普通文件下。两条可选通道（设置页「直链兜底」，默认都关，只在前面几条常规策略全失败后才试）：
+
+| 通道 | 怎么开 | 干什么 | 适用 |
+| --- | --- | --- | --- |
+| 浏览器桥 | 打开「浏览器桥」开关 | 起一个临时无头 Chromium（独立 profile / CDP），真开页面、静音播放、抓 `Network.responseReceived` 里的 m3u8 / mpd / mp4，同时导出同 UA 的 Netscape Cookie 再回喂 yt-dlp | 页面能渲染、但 yt-dlp 认不出流；或站点只认「刚访问过页面」的新鲜 Cookie |
+| FlareSolverr | 填外部服务地址（默认关闭；本机容器一般填 `http://127.0.0.1:8191`） | POST `/v1` 让它解完 CF 把**页面 HTML**交回来，从 JSON-LD `VideoObject.contentUrl` / `og:video` / `twitter:player` 优先挖直链，退而扫 HTML 里的媒体 URL | Cloudflare 前置拦截、本机浏览器过不去的站 |
+
+两者都会把 HTML 里的转义（Unicode 斜杠、反斜杠转义斜杠、百分号编码）还原成正常 URL，并且**只认页面自己声明的视频**：pexels 页面里有 60 多条 `.mp4`（推荐位、装饰视频），靠猜打分一定挑错，实测优先取 JSON-LD 的 `contentUrl` 才拿到 `https://videos.pexels.com/video-files/855029/855029-hd_1920_1080_30fps.mp4`。浏览器桥还会滤掉 `uuu_265.mp4` 一类的装饰/预览片段，抓不到目标时就明确告诉你「页面已打开（标题…），抓到 N 个媒体请求，但都像是装饰或预览片段」，不含糊装成功。
+
+命中直链后，解析结果里多一个 `direct` 对象（`url` / `referer` / `userAgent` / `source`），预览卡上出现「直链兜底」徽章和来源说明；提交下载时前端把 `direct` 与 `directTitle` 原样回传，后端拼接 `--referer` / `--user-agent` 与输出模板 `-o「<标题> [direct].%(ext)s」` 直接把直链交给 yt-dlp（跳过 `-f` 选择，音频模式仍走 `-x`）。CLI 与 MCP 的 `probe --json` 顶层也带 `direct`，字段是附加的，旧调用方不受影响。
+
+**端到端实证**（本机 2026-11-11）：pexels 视频页 `https://www.pexels.com/video/a-cat-855029/`，yt-dlp 直连 403 → 降级链试 default / cookies / impersonate 全败 → FlareSolverr 代取 HTML 命中 `contentUrl` → 下载任务 `done 100.0`，落盘 `Video Of Funny Cat … [direct].mp4` 13,113,884 B，ffprobe 确认 h264 / 1920×1080 / 23.42s。同一条链接在 CLI 与 MCP 的 `probe` 里也能拿到 `direct`。
+
+**边界要说清楚**：FlareSolverr 是外部服务，得自己跑（下面给了一行 docker 命令）；浏览器桥每次失败解析会多花十几秒起浏览器；两者都只解决「能拿到直链」的问题，**不解决账号 / 地区 / 会员限制**，也不把 `cf_clearance` 伪装成万能通行证。直链是页面当时下发的地址，过期就重新解析一次。
+
+```bash
+# 可选：起 FlareSolverr（只在设置了地址时才会被用到）
+docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
+# 然后在设置页「FlareSolverr 地址」填 http://127.0.0.1:8191
+```
+
+**收尾状态**：调研用的 bgutil POT provider 容器、yt-dlp 插件、实验用 chromium 进程均已移除；`fs-test` FlareSolverr 容器也在回归后停掉，正式服务的 `flaresolverrEndpoint` 保持 `null`（默认关闭）。需要时按上面的 docker 命令自己起一个，再在设置页填地址即可。
 
 ## 播放列表
 
@@ -210,8 +243,11 @@ yt-dlp 认识 1398 个站点提取器（`--list-extractors` 实测 1755 行，�
 | `LYCODL_NO_OPEN` | 设为 `1` 则不自动开浏览器 |
 | `LYCODL_KERNEL_FORCE` | 设为 `1` 则 `kernel-update` 无视版本号强制重装内核 |
 | `LYCODL_FFMPEG` | 指定 ffmpeg 可执行文件（默认从 PATH 找，找不到再退常见路径） |
+| `LYCODL_BROWSER` | 浏览器桥用的 Chromium 可执行文件（默认依次找 chromium / chrome / edge / brave） |
 
 `settings.json` 里的 `impersonate` 字段对应设置页的「浏览器指纹伪装」（值如 `chrome` / `safari`，`null` 表示关闭）。它只在遇到 Cloudflare 类 403 时才需要打开。
+
+`browserBridge`（布尔，默认 `false`）与 `flaresolverrEndpoint`（字符串或 `null`，默认关闭）对应设置页「直链兜底」。留空或填 `none` 都会存成 `null`。这两个开关只影响**解析失败后的降级尝试**，不改变正常下载路径。
 
 ## YouTube 的两个硬前提
 
@@ -242,6 +278,7 @@ src/
   ytdlp.rs     内核探测 / 探活 / 解析（含降级链）/ 下载 / 校验 / 热更新
   caps.rs      运行环境自检（JS 运行时 / ffmpeg / 指纹伪装 / Cookie 源 / 提取器 / 磁盘）
   sites.rs     36 个主流站点目录 + 按 URL 匹配 + 按站记住生效的解析策略
+  browser.rs   CDP 浏览器桥（Cookie / UA / 媒体嗅探）+ FlareSolverr HTML 直链提取
   policy.rs    DownloadOnly 与 Agent 两条安全策略
   settings.rs  配置读写
   paths.rs     目录约定

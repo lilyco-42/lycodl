@@ -19,6 +19,10 @@ export interface Settings {
   proxy: string | null;
   concurrency: number;
   impersonate: string | null;
+  /** 浏览器桥：起本机 chromium 代开页面，导 Cookie / 嗅探直链 */
+  browserBridge: boolean;
+  /** FlareSolverr 地址，null 表示不启用 */
+  flaresolverrEndpoint: string | null;
 }
 
 export interface SettingsResponse {
@@ -107,11 +111,21 @@ export interface ExtractorsResponse { total: number; items: ExtractorItem[]; que
 export interface ProbeAttempt { name: string; label: string; ok: boolean; error: string | null }
 export interface ProbeStrategy { applied: string; label: string; attempts: ProbeAttempt[] }
 
+/** 浏览器桥 / FlareSolverr 代取页面挖到的真实媒体直链。 */
+export interface DirectMedia {
+  url: string;
+  referer: string | null;
+  userAgent: string | null;
+  source: "browser" | "flaresolverr";
+}
+
 export interface ProbeResponse {
   ok: true;
   info: VideoInfo;
   site: SiteInfo | null;
   strategy: ProbeStrategy | null;
+  /** extractor 全挂时由浏览器桥 / FlareSolverr 挖到的直链；老后端可能没有该字段 */
+  direct: DirectMedia | null;
 }
 
 export type DownloadMode = "video" | "audio" | "custom";
@@ -123,6 +137,10 @@ export interface DownloadRequest {
   quality: DownloadQuality;
   formatId: string | null;
   playlist: boolean;
+  /** 直链兜底：解析结果必须原样回传，否则后端会退回早已失败的 extractor */
+  direct?: DirectMedia | null;
+  /** 直链兜底时的标题，用 info.title */
+  directTitle?: string | null;
 }
 
 export interface CreateDownloadResponse {

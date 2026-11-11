@@ -12,6 +12,7 @@
 
 mod api;
 mod assets;
+mod browser;
 mod caps;
 mod commands;
 mod jobs;

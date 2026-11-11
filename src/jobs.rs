@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
-use crate::ytdlp::{self, DownloadOpts, Event};
+use crate::ytdlp::{self, DirectMedia, DownloadOpts, Event};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -43,6 +43,12 @@ pub struct Job {
     pub format_id: Option<String>,
     /// 是否整列表下载（重试时原样复用）
     pub playlist: bool,
+    /// extractor 全挂时走浏览器/FlareSolverr 嗅到的直链（重试时原样复用）
+    #[serde(default)]
+    pub direct: Option<DirectMedia>,
+    /// 直链没有 id，用解析时的页面标题当文件名（重试时原样复用）
+    #[serde(default)]
+    pub direct_title: Option<String>,
     pub status: Status,
     /// 0–100
     pub percent: f64,
@@ -101,6 +107,9 @@ pub struct NewJob {
     pub quality: String,
     pub format_id: Option<String>,
     pub playlist: bool,
+    /// 直链兜底：有值就不经过 extractor，直接下这条流
+    pub direct: Option<DirectMedia>,
+    pub direct_title: Option<String>,
     pub settings: crate::settings::Settings,
 }
 
@@ -259,6 +268,8 @@ impl JobStore {
             quality: old.quality,
             format_id: old.format_id,
             playlist: old.playlist,
+            direct: old.direct,
+            direct_title: old.direct_title,
             settings: crate::settings::load(),
         })
     }
@@ -277,6 +288,8 @@ impl JobStore {
             quality: req.quality.clone(),
             format_id: req.format_id.clone(),
             playlist: req.playlist,
+            direct: req.direct.clone(),
+            direct_title: req.direct_title.clone(),
             status: Status::Queued,
             percent: 0.0,
             downloaded_bytes: 0,
@@ -311,6 +324,8 @@ impl JobStore {
             cookies_from_browser: req.settings.cookies_from_browser.clone(),
             proxy: req.settings.proxy.clone(),
             impersonate: req.settings.impersonate.clone(),
+            direct: req.direct,
+            direct_title: req.direct_title,
         };
 
         let store = self.clone();

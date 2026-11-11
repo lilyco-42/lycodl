@@ -19,6 +19,16 @@ pub struct Settings {
     /// 这是兜底手段：只有站点了 Cloudflare 之类的前置防护、裸请求被 403 时才需要。
     /// 默认关着 —— 它对绝大多数站点没有任何提升，反而多一层伪装开销。
     pub impersonate: Option<String>,
+    /// 用本机浏览器代开页面（CDP 桥）：导出 cookie / 嗅探媒体地址
+    ///
+    /// 这是 extractor 全挂时的兜底 —— 浏览器永远是对的，它加载的页面里就有播放器
+    /// 真实在用的地址。默认关着：每次要多起一个 chromium，十几秒。
+    pub browser_bridge: bool,
+    /// FlareSolverr 地址，如 http://127.0.0.1:8191（None = 不用）
+    ///
+    /// 只用来「代取页面 HTML」，不让它给 cookie —— cf_clearance 绑定 IP+TLS 指纹，
+    /// 搬给 yt-dlp 一定 403。
+    pub flaresolverr_endpoint: Option<String>,
 }
 
 impl Default for Settings {
@@ -29,6 +39,8 @@ impl Default for Settings {
             proxy: None,
             concurrency: 2,
             impersonate: None,
+            browser_bridge: false,
+            flaresolverr_endpoint: None,
         }
     }
 }
@@ -62,6 +74,13 @@ pub fn load() -> Settings {
     }
     if s.impersonate.as_deref().is_some_and(|v| v.trim().is_empty()) {
         s.impersonate = None;
+    }
+    if s
+        .flaresolverr_endpoint
+        .as_deref()
+        .is_some_and(|v| v.trim().is_empty() || v.trim() == "none")
+    {
+        s.flaresolverr_endpoint = None;
     }
     s
 }

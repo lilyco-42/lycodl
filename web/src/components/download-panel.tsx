@@ -34,6 +34,7 @@ import { ErrorAlert } from "@/components/error-alert";
 import {
   api,
   errorMessage,
+  type DirectMedia,
   type DownloadMode,
   type DownloadQuality,
   type FormatInfo,
@@ -118,6 +119,7 @@ export function DownloadPanel({ onJobCreated, exampleUrl }: DownloadPanelProps) 
   const [info, setInfo] = useState<VideoInfo | null>(null);
   const [site, setSite] = useState<SiteInfo | null>(null);
   const [strategy, setStrategy] = useState<ProbeStrategy | null>(null);
+  const [direct, setDirect] = useState<DirectMedia | null>(null);
 
   const [mode, setMode] = useState<DownloadMode>("video");
   const [quality, setQuality] = useState<DownloadQuality>("best");
@@ -143,6 +145,7 @@ export function DownloadPanel({ onJobCreated, exampleUrl }: DownloadPanelProps) 
       setInfo(result.info);
       setSite(result.site);
       setStrategy(result.strategy);
+      setDirect(result.direct ?? null);
       setMode("video");
       setQuality("best");
       setPlaylist(result.info.isPlaylist);
@@ -152,6 +155,7 @@ export function DownloadPanel({ onJobCreated, exampleUrl }: DownloadPanelProps) 
       setInfo(null);
       setSite(null);
       setStrategy(null);
+      setDirect(null);
       setProbeError(errorMessage(cause));
     } finally {
       setProbing(false);
@@ -194,6 +198,9 @@ export function DownloadPanel({ onJobCreated, exampleUrl }: DownloadPanelProps) 
         quality,
         formatId: mode === "custom" ? formatId : null,
         playlist,
+        // 直链兜底：解析时拿到的 direct 必须原样回传，否则后端会退回早已失败的 extractor
+        direct,
+        directTitle: direct !== null ? info.title : null,
       });
       toast.success("已加入下载队列", {
         description: "任务 ID：" + result.jobId,
@@ -257,7 +264,7 @@ export function DownloadPanel({ onJobCreated, exampleUrl }: DownloadPanelProps) 
           ) : null}
 
           {!probing && probeError === null && info !== null ? (
-            <VideoPreview info={info} site={site} strategy={strategy} />
+            <VideoPreview info={info} site={site} strategy={strategy} direct={direct} />
           ) : null}
         </CardContent>
       </Card>
@@ -420,10 +427,12 @@ function VideoPreview({
   info,
   site,
   strategy,
+  direct,
 }: {
   info: VideoInfo;
   site: SiteInfo | null;
   strategy: ProbeStrategy | null;
+  direct: DirectMedia | null;
 }) {
   return (
     <div className="space-y-3 rounded-xl border border-border bg-card p-3">
@@ -448,6 +457,7 @@ function VideoPreview({
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant="secondary">{info.extractor}</Badge>
             {site !== null ? <Badge variant="outline">{site.name}</Badge> : null}
+            {direct !== null ? <Badge variant="outline">直链兜底</Badge> : null}
             {info.uploader !== null && info.uploader !== "" ? (
               <span className="truncate text-xs text-muted-foreground">{info.uploader}</span>
             ) : null}
@@ -515,6 +525,18 @@ function VideoPreview({
             ))}
           </ul>
         ) : null
+      ) : null}
+
+      {direct !== null ? (
+        <p className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+          <Info className="mt-0.5 size-3 shrink-0" />
+          <span className="break-words">
+            {direct.source === "flaresolverr"
+              ? "FlareSolverr 代取页面挖到的直链"
+              : "浏览器里真实在播的直链"}
+            ，下载时会带上 Referer / User-Agent（提取器本身没能解析成功）。
+          </span>
+        </p>
       ) : null}
 
       {strategy !== null ? <StrategyTrace strategy={strategy} /> : null}

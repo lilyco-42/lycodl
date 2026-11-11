@@ -324,13 +324,17 @@ pub fn probe(o: &ProbeOpts) -> Result<ProbeOutcome, String> {
     let mut attempts: Vec<ProbeAttempt> = Vec::new();
     let mut last_error: Option<String> = None;
 
+    // 直接问 yt-dlp 的那几种很便宜，最多试 4 次；
+    // 起浏览器 / 找 FlareSolverr 一次十几秒，只在开启时额外给一次机会。
+    let heavy = plans.iter().filter(|p| p.kind != PlanKind::Ytdlp).count();
+    let max_attempts = 4 + heavy;
+
     for (i, plan) in plans.iter().enumerate() {
-        // 后面的降级只在前一条明确失败后才跑，且最多 4 次
-        if i > 0 && attempts.len() >= 4 {
+        if i > 0 && attempts.len() >= max_attempts {
             break;
         }
         match probe_once(o, plan) {
-            Ok(info) => {
+            Ok(hit) => {
                 attempts.push(ProbeAttempt {
                     name: plan.name.to_string(),
                     label: plan.label.to_string(),
@@ -341,7 +345,8 @@ pub fn probe(o: &ProbeOpts) -> Result<ProbeOutcome, String> {
                     crate::sites::remember(&s.key, plan.name);
                 }
                 return Ok(ProbeOutcome {
-                    info,
+                    info: hit.info,
+                    direct: hit.direct,
                     strategy: ProbeStrategy {
                         applied: plan.name.to_string(),
                         label: plan.label.to_string(),
@@ -381,11 +386,27 @@ pub fn probe(o: &ProbeOpts) -> Result<ProbeOutcome, String> {
 }
 
 /// 解析策略的一次尝试
+/// 一次尝试「怎么试」
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanKind {
+    /// 直接问 yt-dlp
+    Ytdlp,
+    /// 起本机浏览器代开页面：能嗅到直链就直链，否则拿它挣到的 cookie 再问 yt-dlp
+    Browser,
+    /// 让 FlareSolverr 代取页面，从 HTML 里挖直链
+    Flare,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProbePlan {
     pub name: &'static str,
     pub label: &'static str,
+    pub kind: PlanKind,
     pub cookies: Option<String>,
+    /// 浏览器桥导出的 Netscape cookie 文件（与 cookies 二选一）
+    pub cookies_file: Option<PathBuf>,
+    /// 与 cookie 配套的 UA（浏览器就是这么发请求的，换一个反而露馅）
+    pub user_agent: Option<String>,
     pub impersonate: Option<String>,
     pub extra: Vec<String>,
 }
@@ -400,7 +421,10 @@ fn build_plans(o: &ProbeOpts, remembered: Option<String>) -> Vec<ProbePlan> {
     plans.push(ProbePlan {
         name: "default",
         label: "默认配置",
+        kind: PlanKind::Ytdlp,
         cookies: o.cookies_from_browser.clone(),
+        cookies_file: None,
+        user_agent: None,
         impersonate: site_imp.clone(),
         extra: Vec::new(),
     });
@@ -409,7 +433,10 @@ fn build_plans(o: &ProbeOpts, remembered: Option<String>) -> Vec<ProbePlan> {
             plans.push(ProbePlan {
                 name: "cookies",
                 label: "自动取本机浏览器 Cookie",
+                kind: PlanKind::Ytdlp,
                 cookies: Some(b),
+                cookies_file: None,
+                user_agent: None,
                 impersonate: site_imp.clone(),
                 extra: Vec::new(),
             });
@@ -420,7 +447,10 @@ fn build_plans(o: &ProbeOpts, remembered: Option<String>) -> Vec<ProbePlan> {
             plans.push(ProbePlan {
                 name: "impersonate",
                 label: "浏览器指纹伪装",
+                kind: PlanKind::Ytdlp,
                 cookies: o.cookies_from_browser.clone(),
+                cookies_file: None,
+                user_agent: None,
                 impersonate: Some(t.clone()),
                 extra: Vec::new(),
             });
@@ -429,7 +459,10 @@ fn build_plans(o: &ProbeOpts, remembered: Option<String>) -> Vec<ProbePlan> {
                     plans.push(ProbePlan {
                         name: "impersonate+cookies",
                         label: "指纹伪装 + 浏览器 Cookie",
+                        kind: PlanKind::Ytdlp,
                         cookies: Some(b),
+                        cookies_file: None,
+                        user_agent: None,
                         impersonate: Some(t),
                         extra: Vec::new(),
                     });
@@ -441,12 +474,41 @@ fn build_plans(o: &ProbeOpts, remembered: Option<String>) -> Vec<ProbePlan> {
         plans.push(ProbePlan {
             name: "youtube-client",
             label: "YouTube 备用播放客户端",
+            kind: PlanKind::Ytdlp,
             cookies: o.cookies_from_browser.clone().or(auto_cookie),
+            cookies_file: None,
+            user_agent: None,
             impersonate: site_imp,
             extra: vec![
                 "--extractor-args".into(),
                 "youtube:player_client=web_safari".into(),
             ],
+        });
+    }
+
+    // 下面两条是「重武器」：extractor 全线失守时才值得花十几秒
+    if o.browser_bridge && crate::browser::chromium_path().is_some() {
+        plans.push(ProbePlan {
+            name: "browser",
+            label: "本机浏览器代开页面",
+            kind: PlanKind::Browser,
+            cookies: None,
+            cookies_file: None,
+            user_agent: None,
+            impersonate: None,
+            extra: Vec::new(),
+        });
+    }
+    if o.flaresolverr.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        plans.push(ProbePlan {
+            name: "flaresolverr",
+            label: "FlareSolverr 代取页面",
+            kind: PlanKind::Flare,
+            cookies: None,
+            cookies_file: None,
+            user_agent: None,
+            impersonate: None,
+            extra: Vec::new(),
         });
     }
 
@@ -460,7 +522,136 @@ fn build_plans(o: &ProbeOpts, remembered: Option<String>) -> Vec<ProbePlan> {
     plans
 }
 
-fn probe_once(o: &ProbeOpts, plan: &ProbePlan) -> Result<VideoInfo, String> {
+struct ProbeHit {
+    info: VideoInfo,
+    direct: Option<DirectMedia>,
+}
+
+fn probe_once(o: &ProbeOpts, plan: &ProbePlan) -> Result<ProbeHit, String> {
+    match plan.kind {
+        PlanKind::Ytdlp => Ok(ProbeHit {
+            info: probe_ytdlp(o, plan)?,
+            direct: None,
+        }),
+        PlanKind::Browser => {
+            // 起一个真浏览器把页面打开：过了反爬就顺手把 cookie 和媒体请求都收走
+            let out = crate::browser::bridge(&o.url, 12_000)?;
+            if let Some(hit) = crate::browser::pick_media(&out.media) {
+                let dm = DirectMedia {
+                    url: hit.url.clone(),
+                    // 直链多半校验 Referer，原页面地址就是浏览器当时带的那个
+                    referer: Some(o.url.clone()),
+                    user_agent: Some(out.user_agent.clone()),
+                    source: "browser".into(),
+                };
+                return Ok(ProbeHit {
+                    info: direct_info(o, &hit, &out.title, "browser"),
+                    direct: Some(dm),
+                });
+            }
+            // 没嗅到媒体，但浏览器可能已经替我们解掉了反爬：拿它的 cookie 再问一次 yt-dlp
+            let note = if out.challenge_passed {
+                format!(
+                    "浏览器侧：页面已打开（标题「{}」），抓到 {} 个媒体请求，但都像是装饰或预览片段",
+                    out.title,
+                    out.media.len()
+                )
+            } else {
+                format!(
+                    "浏览器侧：页面停在反爬挑战上（标题「{}」），本机 Chromium 没能放行——这类 CF 站点请改用 FlareSolverr",
+                    out.title
+                )
+            };
+            let cf = out.cookies_file.clone().ok_or_else(|| {
+                format!("{note}；也没拿到可用的 Cookie")
+            })?;
+            let mut p2 = plan.clone();
+            p2.cookies_file = Some(cf);
+            p2.user_agent = Some(out.user_agent.clone());
+            probe_ytdlp(o, &p2).map(|info| ProbeHit { info, direct: None }).map_err(|e| {
+                // yt-dlp 的报错只说它自己看到什么；浏览器实际看到了什么，只有这里能说清楚
+                format!("{e}
+
+{note}")
+            })
+        }
+        PlanKind::Flare => {
+            let ep = o
+                .flaresolverr
+                .clone()
+                .ok_or_else(|| "未配置 FlareSolverr 地址".to_string())?;
+            let page = crate::browser::flaresolverr_media(&ep, &o.url)?;
+            let dm = DirectMedia {
+                url: page.hit.url.clone(),
+                referer: Some(o.url.clone()),
+                user_agent: None,
+                source: "flaresolverr".into(),
+            };
+            Ok(ProbeHit {
+                info: direct_info(o, &page.hit, &page.title, "flaresolverr"),
+                direct: Some(dm),
+            })
+        }
+    }
+}
+
+/// 浏览器 / FlareSolverr 拿到的是「一条真实在播的媒体地址」，
+/// 没有 extractor 给的元数据，这里拼一个够前端展示的 VideoInfo。
+fn direct_info(o: &ProbeOpts, hit: &crate::browser::MediaHit, page_title: &str, source: &str) -> VideoInfo {
+    let title = {
+        let t = page_title.trim();
+        if t.is_empty() {
+            o.url.clone()
+        } else {
+            t.to_string()
+        }
+    };
+    let digest = sha256_hex(hit.url.as_bytes());
+    let id = digest.chars().take(11).collect::<String>();
+    let ext = guess_ext(&hit.url, &hit.mime);
+    VideoInfo {
+        id,
+        title,
+        uploader: None,
+        duration: None,
+        thumbnail: None,
+        webpage_url: o.url.clone(),
+        extractor: source.to_string(),
+        is_playlist: false,
+        entry_count: 0,
+        entries: Vec::new(),
+        formats: vec![FormatInfo {
+            format_id: "direct".into(),
+            ext,
+            resolution: None,
+            height: None,
+            vcodec: None,
+            acodec: None,
+            filesize: if hit.size > 0 { Some(hit.size as i64) } else { None },
+            tbr: None,
+            note: Some(match source {
+                "flaresolverr" => "FlareSolverr 代取页面挖到的直链".to_string(),
+                _ => "浏览器里真实在播的直链".to_string(),
+            }),
+        }],
+    }
+}
+
+fn guess_ext(url: &str, mime: &str) -> String {
+    let low = url.to_lowercase();
+    if low.contains(".m3u8") || mime.contains("mpegurl") || mime.contains("dash+xml") || low.contains(".mpd") {
+        // HLS/DASH 最终都会被合成 mp4
+        return "mp4".into();
+    }
+    for e in ["mp4", "webm", "mkv", "flv", "m4a", "mp3", "aac", "ogg"] {
+        if low.contains(&format!(".{e}")) {
+            return e.into();
+        }
+    }
+    "mp4".into()
+}
+
+fn probe_ytdlp(o: &ProbeOpts, plan: &ProbePlan) -> Result<VideoInfo, String> {
     let mut args: Vec<String> = vec![
         "--ignore-config".into(),
         "-J".into(),
@@ -473,6 +664,15 @@ fn probe_once(o: &ProbeOpts, plan: &ProbePlan) -> Result<VideoInfo, String> {
     if let Some(c) = plan.cookies.as_deref() {
         args.push("--cookies-from-browser".into());
         args.push(c.to_string());
+    }
+    if let Some(f) = plan.cookies_file.as_deref() {
+        args.push("--cookies".into());
+        args.push(f.display().to_string());
+    }
+    if let Some(ua) = plan.user_agent.as_deref() {
+        // 浏览器桥给的 cookie 是配着它自己的 UA 发的，换 UA 会被判成另一个客户端
+        args.push("--user-agent".into());
+        args.push(ua.to_string());
     }
     if let Some(p) = o.proxy.as_deref() {
         args.push("--proxy".into());
@@ -515,7 +715,17 @@ fn probe_once(o: &ProbeOpts, plan: &ProbePlan) -> Result<VideoInfo, String> {
     if value.is_null() {
         return Err(extract_error(&stderr).unwrap_or_else(|| "解析失败：链接无内容".into()));
     }
-    Ok(parse_info(&value))
+    let info = parse_info(&value);
+    // 「解析成功但一个格式都没有」对下载器等于失败：上游 extractor 认了页面却没找到流。
+    // 这种时候必须继续降级（浏览器/FlareSolverr 还有机会看到真实在播的那条流），
+    // 不能当成成功把降级链堵死。
+    if info.formats.is_empty() && !info.is_playlist {
+        return Err(format!(
+            "No video formats found!（{} 认了页面但没解析出可下载的流）",
+            info.extractor
+        ));
+    }
+    Ok(info)
 }
 
 /// 这条错误再换策略也没用（链接本身的问题，不是环境的问题）
@@ -547,6 +757,8 @@ pub fn strategy_label(name: &str) -> &'static str {
         "impersonate" => "浏览器指纹伪装",
         "impersonate+cookies" => "指纹伪装 + 浏览器 Cookie",
         "youtube-client" => "YouTube 备用播放客户端",
+        "browser" => "本机浏览器代开页面",
+        "flaresolverr" => "FlareSolverr 代取页面",
         _ => "自定义策略",
     }
 }
@@ -683,12 +895,30 @@ pub struct ProbeOpts {
     pub cookies_from_browser: Option<String>,
     pub proxy: Option<String>,
     pub impersonate: Option<String>,
+    /// 允许起本机浏览器代开页面（慢，但 extractor 全挂时是唯一的路）
+    pub browser_bridge: bool,
+    /// FlareSolverr 地址（可选外部服务）
+    pub flaresolverr: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProbeOutcome {
     pub info: VideoInfo,
     pub strategy: ProbeStrategy,
+    /// 浏览器/FlareSolverr 嗅到的直链：extractor 全挂时的兜底下载入口
+    pub direct: Option<DirectMedia>,
+}
+
+/// 页面里真实在用的媒体地址（不经过 extractor）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectMedia {
+    pub url: String,
+    /// 有些 CDN 校验 Referer，下载时要原样带上
+    pub referer: Option<String>,
+    pub user_agent: Option<String>,
+    /// browser / flaresolverr
+    pub source: String,
 }
 
 /// 一次策略尝试的记录（前端想看「试过哪几种、各自为什么失败」）
@@ -722,6 +952,10 @@ pub struct DownloadOpts {
     pub proxy: Option<String>,
     /// 浏览器指纹伪装（curl_cffi）。只对 Cloudflare 类站点有用，按站点设或按需降级
     pub impersonate: Option<String>,
+    /// extractor 全挂时，浏览器/FlareSolverr 嗅到的直链：直接拿它下载
+    pub direct: Option<DirectMedia>,
+    /// 直链没有标题（extractor 没解析过），用解析阶段看到的页面标题当文件名
+    pub direct_title: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -817,7 +1051,13 @@ pub fn build_args(o: &DownloadOpts) -> Vec<String> {
         a.push(dir);
     }
 
-    a.extend(fmt_selector(&o.mode, &o.quality, o.format_id.as_deref()));
+    // 直链没有格式表可挑：它就是唯一的那条流，再套 -f 反而会挑空。
+    // 但「只要音频」是用户意图，-x 仍然要加。
+    match (&o.direct, o.mode.as_str()) {
+        (None, _) => a.extend(fmt_selector(&o.mode, &o.quality, o.format_id.as_deref())),
+        (Some(_), "audio") => a.extend(fmt_selector("audio", &o.quality, None)),
+        (Some(_), _) => {}
+    }
 
     if o.mode != "audio" {
         a.push("--merge-output-format".into());
@@ -845,8 +1085,44 @@ pub fn build_args(o: &DownloadOpts) -> Vec<String> {
             a.push(imp.to_string());
         }
     }
+
+    if let Some(d) = &o.direct {
+        // CDN 大多校验 Referer 与 UA：不原样带上就是 403
+        if let Some(r) = d.referer.as_deref() {
+            a.push("--referer".into());
+            a.push(r.to_string());
+        }
+        if let Some(ua) = d.user_agent.as_deref() {
+            a.push("--user-agent".into());
+            a.push(ua.to_string());
+        }
+        // 直链没有 [id]，靠标题去重会撞名，加个固定后缀区分
+        if let Some(t) = o.direct_title.as_deref() {
+            let safe = sanitize_name(t);
+            if !safe.is_empty() {
+                a.push("-o".into());
+                a.push(format!("{safe} [direct].%(ext)s"));
+            }
+        }
+        a.push(d.url.clone());
+        return a;
+    }
+
     a.push(o.url.clone());
     a
+}
+
+/// 文件系统里不能出现的字符统一换掉（直链拿到的标题常常带 / : ? 之类）
+fn sanitize_name(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    let t = out.trim().trim_matches('.').trim();
+    t.chars().take(120).collect()
 }
 
 fn num_or_none(v: &str) -> Option<f64> {

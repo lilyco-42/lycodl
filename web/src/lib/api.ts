@@ -18,6 +18,7 @@ export interface Settings {
   cookiesFromBrowser: string | null;
   proxy: string | null;
   concurrency: number;
+  impersonate: string | null;
 }
 
 export interface SettingsResponse {
@@ -79,9 +80,38 @@ export interface VideoInfo {
   formats: FormatInfo[];
 }
 
+export type CapSource = "managed" | "system";
+export interface CapKernel { version: string; path: string; source: CapSource }
+export interface CapTool { found: boolean; name: string | null; path: string | null; version: string | null }
+export interface CapImpersonate { available: boolean; targets: string[]; error: string | null }
+export interface CapBrowser { browser: string; label: string; path: string }
+export interface CapCookies { detected: CapBrowser[] }
+export interface CapExtractors { total: number; lines: number; broken: number; cachedAt: number | null; error: string | null }
+export interface CapDisk { path: string; freeBytes: number | null; totalBytes: number | null }
+export interface Capabilities {
+  kernel: CapKernel | null;
+  jsRuntime: CapTool;
+  ffmpeg: CapTool;
+  impersonate: CapImpersonate;
+  cookies: CapCookies;
+  extractors: CapExtractors;
+  disk: CapDisk;
+  warnings: string[];
+}
+export type SiteCategory = "video" | "music" | "live" | "social" | "anime" | "other";
+export type SiteStatus = "ready" | "needs-cookies" | "needs-login" | "experimental";
+export interface SiteInfo { key: string; name: string; category: SiteCategory; domains: string[]; status: SiteStatus; tips: string[]; sampleUrl: string }
+export interface SitesResponse { curated: SiteInfo[]; matched: string | null; strategies: Record<string, string> }
+export interface ExtractorItem { name: string; broken: boolean }
+export interface ExtractorsResponse { total: number; items: ExtractorItem[]; query: string; truncated: boolean }
+export interface ProbeAttempt { name: string; label: string; ok: boolean; error: string | null }
+export interface ProbeStrategy { applied: string; label: string; attempts: ProbeAttempt[] }
+
 export interface ProbeResponse {
   ok: true;
   info: VideoInfo;
+  site: SiteInfo | null;
+  strategy: ProbeStrategy | null;
 }
 
 export type DownloadMode = "video" | "audio" | "custom";
@@ -311,6 +341,15 @@ export const api = {
     ),
 
   listCommands: () => request<CommandsResponse>("/api/commands"),
+
+  caps: () => request<Capabilities>("/api/caps"),
+
+  sites: () => request<SitesResponse>("/api/sites"),
+
+  extractors: (q: string) =>
+    request<ExtractorsResponse>(
+      "/api/extractors" + (q.trim() === "" ? "" : "?q=" + encodeURIComponent(q.trim())),
+    ),
 };
 
 export function jobEventsUrl(id: string): string {

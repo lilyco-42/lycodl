@@ -125,6 +125,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/reveal", post(reveal))
         .route("/api/files/{name}", get(serve_file))
         .route("/api/commands", get(list_commands))
+        .route("/api/caps", get(caps))
+        .route("/api/sites", get(sites))
+        .route("/api/extractors", get(extractors))
         .with_state(state)
         .fallback(static_file)
 }
@@ -172,6 +175,14 @@ async fn put_settings(
     }
     if let Some(v) = patch.get("concurrency").and_then(|v| v.as_u64()) {
         next.concurrency = (v as usize).max(1);
+    }
+    // impersonate 特殊：前端显式发 null 表示「关掉伪装」，
+    // 所以这里必须按「字段存在即覆盖」处理，不能把 null 当成「没传」。
+    if let Some(v) = patch.get("impersonate") {
+        next.impersonate = match v.as_str() {
+            Some(s) if !s.trim().is_empty() && s.trim() != "none" => Some(s.trim().to_string()),
+            _ => None,
+        };
     }
 
     settings::save(&next).map_err(ApiError::internal)?;
@@ -263,14 +274,26 @@ async fn probe(State(st): State<AppState>, Json(req): Json<ProbeReq>) -> Result<
     if url.is_empty() {
         return Err(ApiError::bad("链接不能为空"));
     }
+    let site = crate::sites::match_url(&url);
     let s = st.snapshot();
-    let info = tokio::task::spawn_blocking(move || {
-        ytdlp::probe(&url, s.cookies_from_browser.as_deref(), s.proxy.as_deref())
-    })
-    .await
-    .map_err(|e| ApiError::internal(format!("解析线程崩溃: {e}")))?
-    .map_err(ApiError::bad)?;
-    Ok(Json(json!({ "ok": true, "info": info })))
+    let opts = ytdlp::ProbeOpts {
+        url,
+        cookies_from_browser: s.cookies_from_browser.clone(),
+        proxy: s.proxy.clone(),
+        impersonate: s.impersonate.clone(),
+    };
+    let outcome = tokio::task::spawn_blocking(move || ytdlp::probe(&opts))
+        .await
+        .map_err(|e| ApiError::internal(format!("解析线程崩溃: {e}")))?
+        .map_err(ApiError::bad)?;
+    // strategy 里带着「试过哪几种、各自为什么失败」，前端可以不展示，
+    // 但出问题时它就是唯一能解释「为什么这个链接能通/不通」的证据。
+    Ok(Json(json!({
+        "ok": true,
+        "info": outcome.info,
+        "site": site,
+        "strategy": outcome.strategy,
+    })))
 }
 
 // ── 下载 ───────────────────────────────────────────────────────
@@ -606,6 +629,80 @@ fn safety_name(t: lilyco::prelude::SafetyTier) -> &'static str {
         lilyco::prelude::SafetyTier::Confirm => "Confirm",
         lilyco::prelude::SafetyTier::Token => "Token",
         lilyco::prelude::SafetyTier::NeverAuto => "NeverAuto",
+    }
+}
+
+// ── 平台支持：能力自检 / 站点目录 / 提取器搜索 ─────────────────
+
+/// 运行环境自检：内核、JS 运行时、ffmpeg、指纹伪装、浏览器、提取器覆盖、磁盘
+///
+/// 这些是「为什么某个站下不了」的全部前置条件。把它们一次全查出来，
+/// 用户就不用一个个猜是 Cookie 的问题还是 ffmpeg 没装。
+async fn caps(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let out = st.snapshot().output_dir;
+    let caps = tokio::task::spawn_blocking(move || {
+        crate::caps::all(std::path::Path::new(&out))
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("能力自检线程崩溃: {e}")))?;
+    Ok(Json(json!(caps)))
+}
+
+/// 站点目录 + 已记住的解析策略
+///
+/// matched 恒为 null：前端用它在卡片上显示「当前链接匹配到 X」，
+/// 而 /api/sites 没有入参，真正的匹配结果已经在 /api/probe 的 site 字段里了。
+async fn sites() -> Json<Value> {
+    // 存储里是策略 key（default / cookies / impersonate…），对外换成中文名，
+    // 前端卡片上直接显示「已记录策略：自动取本机浏览器 Cookie」。
+    let strategies: std::collections::BTreeMap<String, String> = crate::sites::strategies()
+        .into_iter()
+        .map(|(k, v)| (k, crate::ytdlp::strategy_label(&v).to_string()))
+        .collect();
+    let body = crate::sites::SitesResponse {
+        curated: crate::sites::curated(),
+        matched: None,
+        strategies,
+    };
+    Json(json!(body))
+}
+
+/// 提取器搜索：内核认识哪些站点（这是「支不支持」的唯一真相来源）
+async fn extractors(Query(q): Query<HashMap<String, String>>) -> Json<Value> {
+    let query = q.get("q").map(|v| v.trim().to_string()).unwrap_or_default();
+    let all = crate::caps::extractor_list();
+    match all {
+        Ok(list) => {
+            let needle = query.to_lowercase();
+            let matched: Vec<(String, bool)> = if needle.is_empty() {
+                list.clone()
+            } else {
+                list.iter()
+                    .filter(|(name, _)| name.to_lowercase().contains(&needle))
+                    .cloned()
+                    .collect()
+            };
+            let total = matched.len();
+            let truncated = total > 200;
+            let items: Vec<Value> = matched
+                .into_iter()
+                .take(200)
+                .map(|(name, broken)| json!({ "name": name, "broken": broken }))
+                .collect();
+            Json(json!({
+                "total": total,
+                "items": items,
+                "query": query,
+                "truncated": truncated,
+            }))
+        }
+        Err(e) => Json(json!({
+            "total": 0,
+            "items": [],
+            "query": query,
+            "truncated": false,
+            "error": e,
+        })),
     }
 }
 

@@ -96,11 +96,44 @@ lycodl download --url <视频页> --mode custom --format-id 137
 
 ## 网页控制台
 
-五个页签：**下载**（粘贴链接 → 解析 → 选模式/画质 → 提交）、**任务**（SSE 实时进度、取消）、**文件**（成品列表、直接下载、定位到文件夹）、**设置**（输出目录、浏览器 Cookie、代理、并发数、内核更新）、**命令（AI）**（把注册表当工具签名展示，可复制 CLI 用法给 AI）。
+六个页签：**下载**（粘贴链接 → 解析 → 选模式/画质 → 提交）、**任务**（SSE 实时进度、取消、重试、日志）、**文件**（成品列表、直接下载、定位到文件夹）、**设置**（输出目录、浏览器 Cookie、代理、并发数、指纹伪装、内核更新）、**平台**（运行环境自检、主流站点目录、提取器搜索）、**命令（AI）**（把注册表当工具签名展示，可复制 CLI 用法给 AI）。
 
 「定位」走的是 `POST /api/reveal`：后端用 D-Bus 的 `org.freedesktop.FileManager1.ShowItems` 让 Dolphin / Nautilus 直接**选中**那个文件（实测拉起 `dolphin --select <路径>`），拉不起来就退一步 `xdg-open` 打开所在目录，再不行前端退回「复制路径到剪贴板」。该接口只允许定位输出目录内的路径，不能拿来当任意文件的打开原语。
 
 前端构建产物通过 `include_dir!` 编进二进制，单个可执行文件即可运行（health 里的 `webMode` 会显示 `embedded`）。
+
+## 全平台支持
+
+yt-dlp 认识 1398 个站点提取器（`--list-extractors` 实测 1755 行，其中 136 个上游自己标注了 CURRENTLY BROKEN）。所以「支持多少平台」不是靠本项目写死名单，而是靠三件事：
+
+**一、把前置条件摊开给人看。** `GET /api/caps`（平台页顶部「运行环境自检」）一次查完：内核版本与来源、JS 运行时、ffmpeg、指纹伪装目标、本机有哪些浏览器可当 Cookie 源、提取器覆盖量、磁盘余量。任何一项缺失都会在 `warnings` 里给出「缺了会怎样 + 去哪补」。这些正是「为什么这个站下不了」的全部原因，不用再一个个猜。
+
+**二、解析不再硬扛，而是逐级降级。** `POST /api/probe` 的 `strategy` 字段会说清楚它到底试了什么：
+
+| 策略 | 什么时候触发 | 说明 |
+| --- | --- | --- |
+| `default` | 总是第一个 | 就用设置里的 Cookie / 代理 / 指纹伪装 |
+| `cookies` | 设置里没选 Cookie 时 | 自动挑一个本机装了的浏览器取 Cookie |
+| `impersonate` | 设置里没开伪装、且内核报有可用目标 | TLS 指纹伪装，对付 Cloudflare 一类的 403 |
+| `impersonate+cookies` | 上一条失败 | 两者叠加 |
+| `youtube-client` | 链接是 YouTube | `--extractor-args youtube:player_client=web_safari` |
+
+同一站点最多试 4 次（YouTube 因为多一条备用播放客户端，计划里会排到 5 条，但同样封顶 4 次）。**成功的策略会按站点记进 `~/.config/lycodl/strategies.json`**，下次同站直接先走那条路 —— 平台页的卡片上会显示「已记录策略：自动取本机浏览器 Cookie」。如果错误本身跟环境无关（`Unsupported URL`、`404`、直播已结束），立刻停下，不做无意义的重复尝试。
+
+需要说清楚的一点：**指纹伪装不是万能药**。实测对 dailymotion / vimeo / 小红书 / 微博 / reddit / 抖音这六个疑难站点，开不开伪装结果完全一致（都是站点侧的登录 / 风控要求）。它只对「Cloudflare 前置拦截」这类场景有用，所以默认关着、只当兜底，不默认开启。
+
+**三、失败信息直接给下一步动作。** `friendly_error` 现在覆盖 20 类上游报错，每一条都翻译成中文并指明操作：`Fresh cookies are needed`（选个最近开过该站的浏览器）、`Account authentication is required`（要已登录的 Cookie）、`geo restriction`（填代理）、`Unable to extract`（内核要更新）、`No video formats found`（三种可能原因分别列出）……解析全失败时还会附上「已尝试 4 种方式：默认配置（失败）→ 自动取本机浏览器 Cookie（失败）→ …」，一眼能看出卡在哪一步。
+
+前端把这些原样暴露：解析成功后卡片上会显示站点名徽章、平台状态（可直接用 / 需 Cookie / 需登录 / 不保证）、以及可展开的「试了 N 种方式」明细；失败时错误提示条里就带着上面那段完整说明。
+
+实测覆盖（本机 2026-11-11，全部走真实网络）：
+
+- **无 Cookie 直接可用**：哔哩哔哩（含番剧）、TikTok、Internet Archive、PeerTube、SoundCloud、niconico、VK、Dailymotion、AcFun、微博、知乎、网易云音乐、QQ 音乐、喜马拉雅、Bandcamp、Twitch 点播、BitChute、Odysee、TED、Streamable、Instagram reel（公开内容）。
+- **需要 Cookie**：YouTube（降级链自动补上本机 Chromium Cookie，实测 18 个格式）、抖音、小红书、西瓜视频。
+- **需要登录**：Facebook、Vimeo、Reddit。
+- **上游本身限制**（不是本项目 bug）：优酷错误码 6004、爱奇艺 `Can't find any video`、酷我 `Unable to extract song name`、虎牙直播离线、斗鱼直播源 404、快手根本没有对应提取器。
+
+站点目录（`GET /api/sites`，36 个主流站点）里每个站点都带 `status` 与中文 `tips`，告诉你它属于上面哪一档、以及要配什么才能下。
 
 ## 播放列表
 
@@ -176,6 +209,9 @@ lycodl download --url <视频页> --mode custom --format-id 137
 | `LYCODL_PORT` | Web 端口（默认 8765，其次读 `LILYCO_PORT`；被占用时自动往后找可用端口） |
 | `LYCODL_NO_OPEN` | 设为 `1` 则不自动开浏览器 |
 | `LYCODL_KERNEL_FORCE` | 设为 `1` 则 `kernel-update` 无视版本号强制重装内核 |
+| `LYCODL_FFMPEG` | 指定 ffmpeg 可执行文件（默认从 PATH 找，找不到再退常见路径） |
+
+`settings.json` 里的 `impersonate` 字段对应设置页的「浏览器指纹伪装」（值如 `chrome` / `safari`，`null` 表示关闭）。它只在遇到 Cloudflare 类 403 时才需要打开。
 
 ## YouTube 的两个硬前提
 
@@ -203,7 +239,9 @@ src/
   commands.rs  8 个 #[derive(App)] 命令 + 注册表装配
   api.rs       axum 路由：REST + SSE + 静态资源
   jobs.rs      任务表、并发槽位、进度广播、重试（respawn）
-  ytdlp.rs     内核探测 / 探活 / 解析 / 下载 / 校验 / 热更新
+  ytdlp.rs     内核探测 / 探活 / 解析（含降级链）/ 下载 / 校验 / 热更新
+  caps.rs      运行环境自检（JS 运行时 / ffmpeg / 指纹伪装 / Cookie 源 / 提取器 / 磁盘）
+  sites.rs     36 个主流站点目录 + 按 URL 匹配 + 按站记住生效的解析策略
   policy.rs    DownloadOnly 与 Agent 两条安全策略
   settings.rs  配置读写
   paths.rs     目录约定

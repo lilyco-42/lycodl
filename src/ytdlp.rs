@@ -119,16 +119,33 @@ fn js_runtime_candidates() -> Vec<(&'static str, PathBuf)> {
 
 /// 生成 --js-runtimes name:path 参数（找不到运行时则返回空，交给 yt-dlp 决定）
 pub fn js_runtime_args() -> Vec<String> {
-    if let Ok(v) = std::env::var("LYCODL_JS_RUNTIME") {
-        let v = v.trim();
-        if !v.is_empty() {
-            return vec!["--js-runtimes".into(), v.to_string()];
-        }
-    }
-    match js_runtime_candidates().into_iter().next() {
+    match js_runtime_best() {
         Some((name, path)) => vec!["--js-runtimes".into(), format!("{name}:{}", path.display())],
         None => Vec::new(),
     }
+}
+
+/// 本机最合适的 JS 运行时。caps 自检与 --js-runtimes 参数共用这一份判断，
+/// 避免「自检说有、实际没用上」这种自相矛盾。
+pub fn js_runtime_best() -> Option<(&'static str, PathBuf)> {
+    if let Ok(v) = std::env::var("LYCODL_JS_RUNTIME") {
+        let v = v.trim();
+        if !v.is_empty() {
+            if let Some((name, path)) = v.split_once(':') {
+                let name: &'static str = match name {
+                    "node" => "node",
+                    "deno" => "deno",
+                    "bun" => "bun",
+                    _ => "node",
+                };
+                if !path.trim().is_empty() {
+                    return Some((name, PathBuf::from(path.trim())));
+                }
+            }
+            return Some(("node", PathBuf::from(v)));
+        }
+    }
+    js_runtime_candidates().into_iter().next()
 }
 
 fn which(program: &str) -> Result<PathBuf, String> {
@@ -295,8 +312,155 @@ pub fn parse_info(root: &serde_json::Value) -> VideoInfo {
 }
 
 /// 解析一个链接（-J；对播放列表用 --flat-playlist 只取骨架，快）
-pub fn probe(url: &str, cookies: Option<&str>, proxy: Option<&str>) -> Result<VideoInfo, String> {
-    let kernel = locate()?;
+///
+/// 全平台支持的难点不在「能不能解析」，而在「换一个站的坑长什么样」。
+/// 所以这里不是一次性硬扛，而是按代价从低到高排一串策略逐级尝试：
+/// 默认配置 → 自动取本机浏览器 Cookie → 指纹伪装 → 伪装+Cookie → 站点专属后手。
+/// 哪一级成功就把那一级记进策略记忆，下次同站直接走同一条路。
+pub fn probe(o: &ProbeOpts) -> Result<ProbeOutcome, String> {
+    let site = crate::sites::match_url(&o.url);
+    let plans = build_plans(o, site.as_ref().and_then(|s| crate::sites::strategy_for(&s.key)));
+    let total = plans.len();
+    let mut attempts: Vec<ProbeAttempt> = Vec::new();
+    let mut last_error: Option<String> = None;
+
+    for (i, plan) in plans.iter().enumerate() {
+        // 后面的降级只在前一条明确失败后才跑，且最多 4 次
+        if i > 0 && attempts.len() >= 4 {
+            break;
+        }
+        match probe_once(o, plan) {
+            Ok(info) => {
+                attempts.push(ProbeAttempt {
+                    name: plan.name.to_string(),
+                    label: plan.label.to_string(),
+                    ok: true,
+                    error: None,
+                });
+                if let Some(s) = &site {
+                    crate::sites::remember(&s.key, plan.name);
+                }
+                return Ok(ProbeOutcome {
+                    info,
+                    strategy: ProbeStrategy {
+                        applied: plan.name.to_string(),
+                        label: plan.label.to_string(),
+                        attempts,
+                    },
+                });
+            }
+            Err(raw) => {
+                let friendly = friendly_error(&raw);
+                attempts.push(ProbeAttempt {
+                    name: plan.name.to_string(),
+                    label: plan.label.to_string(),
+                    ok: false,
+                    error: Some(first_line(&friendly)),
+                });
+                let terminal = terminal_error(&raw);
+                last_error = Some(friendly);
+                if terminal {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut msg = last_error.unwrap_or_else(|| "解析失败：所有策略都试过了".to_string());
+    if attempts.len() > 1 {
+        let tried: Vec<String> = attempts
+            .iter()
+            .map(|a| format!("{}（{}）", a.label, if a.ok { "成功" } else { "失败" }))
+            .collect();
+        msg.push_str(&format!(
+            "\n\n已尝试 {total} 种方式：{}。最后一次的报错见上。",
+            tried.join(" → ")
+        ));
+    }
+    Err(msg)
+}
+
+/// 解析策略的一次尝试
+#[derive(Debug, Clone)]
+pub struct ProbePlan {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub cookies: Option<String>,
+    pub impersonate: Option<String>,
+    pub extra: Vec<String>,
+}
+
+fn build_plans(o: &ProbeOpts, remembered: Option<String>) -> Vec<ProbePlan> {
+    let site_imp = o.impersonate.clone().filter(|s| !s.trim().is_empty());
+    let auto_imp = crate::caps::default_impersonate_target();
+    let auto_cookie = crate::caps::auto_cookie_browser();
+    let is_youtube = o.url.contains("youtube.com") || o.url.contains("youtu.be");
+
+    let mut plans: Vec<ProbePlan> = Vec::new();
+    plans.push(ProbePlan {
+        name: "default",
+        label: "默认配置",
+        cookies: o.cookies_from_browser.clone(),
+        impersonate: site_imp.clone(),
+        extra: Vec::new(),
+    });
+    if o.cookies_from_browser.is_none() {
+        if let Some(b) = auto_cookie.clone() {
+            plans.push(ProbePlan {
+                name: "cookies",
+                label: "自动取本机浏览器 Cookie",
+                cookies: Some(b),
+                impersonate: site_imp.clone(),
+                extra: Vec::new(),
+            });
+        }
+    }
+    if site_imp.is_none() {
+        if let Some(t) = auto_imp.clone() {
+            plans.push(ProbePlan {
+                name: "impersonate",
+                label: "浏览器指纹伪装",
+                cookies: o.cookies_from_browser.clone(),
+                impersonate: Some(t.clone()),
+                extra: Vec::new(),
+            });
+            if o.cookies_from_browser.is_none() {
+                if let Some(b) = auto_cookie.clone() {
+                    plans.push(ProbePlan {
+                        name: "impersonate+cookies",
+                        label: "指纹伪装 + 浏览器 Cookie",
+                        cookies: Some(b),
+                        impersonate: Some(t),
+                        extra: Vec::new(),
+                    });
+                }
+            }
+        }
+    }
+    if is_youtube {
+        plans.push(ProbePlan {
+            name: "youtube-client",
+            label: "YouTube 备用播放客户端",
+            cookies: o.cookies_from_browser.clone().or(auto_cookie),
+            impersonate: site_imp,
+            extra: vec![
+                "--extractor-args".into(),
+                "youtube:player_client=web_safari".into(),
+            ],
+        });
+    }
+
+    // 记住的策略提到最前面：这条站以前就是靠它通的
+    if let Some(key) = remembered {
+        if let Some(pos) = plans.iter().position(|p| p.name == key) {
+            let p = plans.remove(pos);
+            plans.insert(0, p);
+        }
+    }
+    plans
+}
+
+fn probe_once(o: &ProbeOpts, plan: &ProbePlan) -> Result<VideoInfo, String> {
     let mut args: Vec<String> = vec![
         "--ignore-config".into(),
         "-J".into(),
@@ -306,16 +470,22 @@ pub fn probe(url: &str, cookies: Option<&str>, proxy: Option<&str>) -> Result<Vi
         "20".into(),
     ];
     args.extend(js_runtime_args());
-    if let Some(c) = cookies {
+    if let Some(c) = plan.cookies.as_deref() {
         args.push("--cookies-from-browser".into());
         args.push(c.to_string());
     }
-    if let Some(p) = proxy {
+    if let Some(p) = o.proxy.as_deref() {
         args.push("--proxy".into());
         args.push(p.to_string());
     }
-    args.push(url.to_string());
+    if let Some(imp) = plan.impersonate.as_deref() {
+        args.push("--impersonate".into());
+        args.push(imp.to_string());
+    }
+    args.extend(plan.extra.iter().cloned());
+    args.push(o.url.clone());
 
+    let kernel = locate()?;
     let out = Command::new(&kernel.path)
         .args(&args)
         .stdin(Stdio::null())
@@ -326,21 +496,68 @@ pub fn probe(url: &str, cookies: Option<&str>, proxy: Option<&str>) -> Result<Vi
     let stderr = String::from_utf8_lossy(&out.stderr);
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|_| {
         let msg = extract_error(&stderr).unwrap_or_else(|| {
-            let tail: String = stderr.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+            let tail: String = stderr
+                .chars()
+                .rev()
+                .take(600)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
             if tail.trim().is_empty() {
                 "解析失败：yt-dlp 没有返回任何内容".to_string()
             } else {
                 tail.trim().to_string()
             }
         });
-        friendly_error(&msg)
+        msg
     })?;
     if value.is_null() {
-        return Err(friendly_error(
-            &extract_error(&stderr).unwrap_or_else(|| "解析失败：链接无内容".into()),
-        ));
+        return Err(extract_error(&stderr).unwrap_or_else(|| "解析失败：链接无内容".into()));
     }
     Ok(parse_info(&value))
+}
+
+/// 这条错误再换策略也没用（链接本身的问题，不是环境的问题）
+fn terminal_error(raw: &str) -> bool {
+    let low = raw.to_lowercase();
+    [
+        "unsupported url",
+        "this video is unavailable",
+        "video is offline",
+        "no video could be found",
+        "can't find any video",
+        "http error 404",
+        "not found",
+        "video unavailable",
+        "has been removed",
+    ]
+    .iter()
+    .any(|k| low.contains(k))
+}
+
+/// 策略 key → 中文名。
+///
+/// 存进 strategies.json 的是 key（稳定、可被 build_plans 比对），
+/// 但接口把它回给前端时要给人看，所以这里做一次翻译。
+pub fn strategy_label(name: &str) -> &'static str {
+    match name {
+        "default" => "默认配置",
+        "cookies" => "自动取本机浏览器 Cookie",
+        "impersonate" => "浏览器指纹伪装",
+        "impersonate+cookies" => "指纹伪装 + 浏览器 Cookie",
+        "youtube-client" => "YouTube 备用播放客户端",
+        _ => "自定义策略",
+    }
+}
+
+fn first_line(s: &str) -> String {
+    let l = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if l.chars().count() > 240 {
+        format!("{}…", l.chars().take(240).collect::<String>())
+    } else {
+        l.to_string()
+    }
 }
 
 /// 把 yt-dlp 的英文报错翻译成「下一步该点什么」的提示。
@@ -356,7 +573,7 @@ pub fn friendly_error(raw: &str) -> String {
     }
     if low.contains("no video formats found") {
         return format!(
-            "{raw}\n\n提示：YouTube 的解签名需要 JavaScript 运行时。装好 node / deno / bun 任一（本机已有 node 就不用动），或用 LYCODL_JS_RUNTIME=node:/path/to/node 显式指定；同时确认已在设置里选了浏览器 Cookie。"
+            "{raw}\n\n提示：上游没给出可下载的视频流。三个常见原因：①YouTube 的解签名需要 JavaScript 运行时 —— 装 node / deno / bun 任一（或用 LYCODL_JS_RUNTIME=node:/path/to/node 指定）；②站点要求浏览器 Cookie（设置页「从浏览器取 Cookie」）；③这个页面本身是图集/预览图，没有正片。"
         );
     }
     if low.contains("requested format is not available") {
@@ -376,7 +593,72 @@ pub fn friendly_error(raw: &str) -> String {
         return format!("{raw}\n\n提示：被站点限流或防盗链拦了。可换 Cookie、挂代理（设置页「代理」），或先更新内核试试。");
     }
     if low.contains("unsupported url") {
-        return format!("{raw}\n\n提示：yt-dlp 不认识这个链接。确认它是视频页面地址而不是分享短链/首页。");
+        return format!(
+            "{raw}\n\n提示：yt-dlp 不认识这个链接。确认它是视频页面地址而不是分享短链/首页；到「平台」页搜一下站点名，看内核有没有对应提取器（没有就是真不支持）。"
+        );
+    }
+    // ── 各站特有 / 常见的下一批坑 ────────────────────────────────
+
+    if low.contains("fresh cookies") || low.contains("cookies (not necessarily logged in)") {
+        return format!(
+            "{raw}\n\n提示：这个站只认「新鲜 Cookie」，不需要登录状态。到「设置 → 从浏览器取 Cookie」选一个最近打开过该站的浏览器（多数情况 Chromium 就行）。"
+        );
+    }
+    if low.contains("account authentication is required") {
+        return format!(
+            "{raw}\n\n提示：站点要求账号身份。选一个已登录该站的浏览器 Cookie；没有账号的话这条链接拿不到。"
+        );
+    }
+    if low.contains("cannot parse data") {
+        return format!(
+            "{raw}\n\n提示：站点返回了登录墙而不是视频页。换成已登录该站的浏览器 Cookie 再试；Facebook 这类站点对未登录请求一律这样回。"
+        );
+    }
+    if low.contains("geo restriction") || low.contains("not available in your country") || low.contains("geo-restricted") {
+        return format!(
+            "{raw}\n\n提示：地区限制。到「设置」填代理（如 http://127.0.0.1:7890）后再解析一次。"
+        );
+    }
+    if low.contains("unable to extract") {
+        return format!(
+            "{raw}\n\n提示：站点页面结构变了，内核的解析规则还没跟上。到「设置 → 内核」点「检查更新」拉最新版 yt-dlp（热更新，不用重装 lycodl）。"
+        );
+    }
+    if low.contains("timed out") || low.contains("timeout") || low.contains("connection") {
+        return format!(
+            "{raw}\n\n提示：网络连不上或太慢。挂个代理（设置页「代理」），或者在能直连的网络下重试。"
+        );
+    }
+    if low.contains("impersonate target") {
+        return format!(
+            "{raw}\n\n提示：这个内核没有该指纹伪装目标。到「平台 → 运行环境自检」看可用列表，或在设置里关掉指纹伪装。"
+        );
+    }
+    if low.contains("no video formats found") && low.contains("storyboard") {
+        return format!(
+            "{raw}\n\n提示：上游对这个视频只下发了预览图（storyboard），拿不到正片。换一个视频试试，不是本项目的问题。"
+        );
+    }
+    if low.contains("this video is unavailable") || low.contains("video unavailable") {
+        return format!(
+            "{raw}\n\n提示：视频已被删除/私有/地区屏蔽。先确认在浏览器里能正常播放，再考虑 Cookie 或代理。"
+        );
+    }
+    if low.contains("video is offline") || low.contains("is offline") {
+        return format!("{raw}\n\n提示：直播已结束或未开播。直播要么在直播中带 Cookie 抓，要么等录播生成后再下。");
+    }
+    if low.contains("requested format is not available") {
+        return format!(
+            "{raw}\n\n提示：这个链接没有你选的画质。先解析看格式列表，或改用「自定义格式」填一个存在的 format_id。"
+        );
+    }
+    if low.contains("no video could be found") {
+        return format!("{raw}\n\n提示：这条内容里没有视频（纯文字/纯图片）。换一条带视频的链接。");
+    }
+    if low.contains("can't find any video") {
+        return format!(
+            "{raw}\n\n提示：上游没给出可下载的视频流（常见于需要会员或风控的页面）。换 Cookie 或换链接。"
+        );
     }
     raw.to_string()
 }
@@ -394,6 +676,40 @@ fn extract_error(stderr: &str) -> Option<String> {
 
 // ── 下载 ────────────────────────────────────────────────────
 
+/// 解析请求：cookies / proxy 来自设置，impersonate 也来自设置
+#[derive(Debug, Clone, Default)]
+pub struct ProbeOpts {
+    pub url: String,
+    pub cookies_from_browser: Option<String>,
+    pub proxy: Option<String>,
+    pub impersonate: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProbeOutcome {
+    pub info: VideoInfo,
+    pub strategy: ProbeStrategy,
+}
+
+/// 一次策略尝试的记录（前端想看「试过哪几种、各自为什么失败」）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeAttempt {
+    pub name: String,
+    pub label: String,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeStrategy {
+    /// 最终生效的策略名（default / cookies / impersonate / impersonate+cookies / youtube-client）
+    pub applied: String,
+    pub label: String,
+    pub attempts: Vec<ProbeAttempt>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DownloadOpts {
     pub url: String,
@@ -404,6 +720,8 @@ pub struct DownloadOpts {
     pub output_dir: PathBuf,
     pub cookies_from_browser: Option<String>,
     pub proxy: Option<String>,
+    /// 浏览器指纹伪装（curl_cffi）。只对 Cloudflare 类站点有用，按站点设或按需降级
+    pub impersonate: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -493,6 +811,12 @@ pub fn build_args(o: &DownloadOpts) -> Vec<String> {
     // YouTube 的解签名离不开 JS 运行时，缺了它只会拿到 zero formats
     a.extend(js_runtime_args());
 
+    // 合并视频+音频全靠 ffmpeg：显式指路，PATH 里没有时也不会静默失败
+    if let Some(dir) = crate::caps::ffmpeg_dir() {
+        a.push("--ffmpeg-location".into());
+        a.push(dir);
+    }
+
     a.extend(fmt_selector(&o.mode, &o.quality, o.format_id.as_deref()));
 
     if o.mode != "audio" {
@@ -513,6 +837,13 @@ pub fn build_args(o: &DownloadOpts) -> Vec<String> {
     if let Some(p) = o.proxy.as_deref() {
         a.push("--proxy".into());
         a.push(p.to_string());
+    }
+    if let Some(imp) = o.impersonate.as_deref() {
+        let imp = imp.trim();
+        if !imp.is_empty() {
+            a.push("--impersonate".into());
+            a.push(imp.to_string());
+        }
     }
     a.push(o.url.clone());
     a

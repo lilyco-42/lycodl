@@ -21,6 +21,15 @@ import { useSettings } from "@/hooks/useSettings";
 import { useYtDlp } from "@/hooks/useYtDlp";
 
 const NO_COOKIE = "__none__";
+const NO_IMP = "__none__";
+
+const IMPERSONATE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "chrome", label: "chrome" },
+  { value: "firefox", label: "firefox" },
+  { value: "safari", label: "safari" },
+  { value: "edge", label: "edge" },
+  { value: "tor", label: "tor" },
+];
 
 const COOKIE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "chrome", label: "Chrome" },
@@ -38,6 +47,7 @@ export function SettingsPanel() {
   const [cookiesFromBrowser, setCookiesFromBrowser] = useState<string>(NO_COOKIE);
   const [proxy, setProxy] = useState("");
   const [concurrency, setConcurrency] = useState("1");
+  const [impersonate, setImpersonate] = useState<string>(NO_IMP);
 
   useEffect(() => {
     if (settings === null) {
@@ -47,6 +57,7 @@ export function SettingsPanel() {
     setCookiesFromBrowser(settings.cookiesFromBrowser ?? NO_COOKIE);
     setProxy(settings.proxy ?? "");
     setConcurrency(String(settings.concurrency));
+    setImpersonate(settings.impersonate ?? NO_IMP);
   }, [settings]);
 
   async function handleSave() {
@@ -62,6 +73,7 @@ export function SettingsPanel() {
         cookiesFromBrowser: cookiesFromBrowser === NO_COOKIE ? null : cookiesFromBrowser,
         proxy: proxy.trim() === "" ? null : proxy.trim(),
         concurrency: parsedConcurrency,
+        impersonate: impersonate === NO_IMP ? null : impersonate,
       });
       const running = result.running ?? 0;
       if (parsedConcurrency < prevConcurrency && running > parsedConcurrency) {
@@ -156,6 +168,26 @@ export function SettingsPanel() {
                   spellCheck={false}
                 />
                 <p className="text-xs text-muted-foreground">留空表示直连。</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="impersonate-select">浏览器指纹伪装</Label>
+                <Select value={impersonate} onValueChange={setImpersonate}>
+                  <SelectTrigger id="impersonate-select" className="w-full sm:max-w-xs">
+                    <SelectValue placeholder="不启用" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_IMP}>无（不启用）</SelectItem>
+                    {IMPERSONATE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  部分站点有 Cloudflare 防护，遇到 403 再开启。
+                </p>
               </div>
 
               <div className="flex justify-end">

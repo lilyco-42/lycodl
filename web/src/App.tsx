@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Download, FolderOpen, ListVideo, Settings2, Zap } from "lucide-react";
+import { Bot, Download, FolderOpen, Globe, ListVideo, Settings2, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
@@ -8,6 +8,7 @@ import { JobsPanel } from "@/components/jobs-panel";
 import { FilesPanel } from "@/components/files-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { CommandsPanel } from "@/components/commands-panel";
+import { PlatformsPanel } from "@/components/platforms-panel";
 import { useHealth } from "@/hooks/useHealth";
 
 const TABS = [
@@ -15,12 +16,25 @@ const TABS = [
   { value: "jobs", label: "任务", icon: ListVideo },
   { value: "files", label: "文件", icon: FolderOpen },
   { value: "settings", label: "设置", icon: Settings2 },
+  { value: "platforms", label: "平台", icon: Globe },
   { value: "commands", label: "命令（AI）", icon: Bot },
 ] as const;
 
 function App() {
   const [tab, setTab] = useState<string>("download");
+  /** 平台页点示例链接后回填给下载页；置空再设值可让同一个链接重复触发 */
+  const [exampleUrl, setExampleUrl] = useState<string>("");
   const { health } = useHealth();
+
+  function handleUseExample(url: string) {
+    setTab("download");
+    if (exampleUrl === url) {
+      setExampleUrl("");
+      window.setTimeout(() => setExampleUrl(url), 0);
+      return;
+    }
+    setExampleUrl(url);
+  }
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
@@ -54,7 +68,7 @@ function App() {
           </TabsList>
 
           <TabsContent value="download">
-            <DownloadPanel onJobCreated={() => setTab("jobs")} />
+            <DownloadPanel onJobCreated={() => setTab("jobs")} exampleUrl={exampleUrl} />
           </TabsContent>
           <TabsContent value="jobs">
             <JobsPanel />
@@ -64,6 +78,9 @@ function App() {
           </TabsContent>
           <TabsContent value="settings">
             <SettingsPanel />
+          </TabsContent>
+          <TabsContent value="platforms">
+            <PlatformsPanel onUseExample={handleUseExample} />
           </TabsContent>
           <TabsContent value="commands">
             <CommandsPanel />

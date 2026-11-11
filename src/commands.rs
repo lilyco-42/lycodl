@@ -10,7 +10,7 @@ use lilyco::prelude::*;
 use serde_json::{json, Value};
 
 use crate::settings;
-use crate::ytdlp::{self, DownloadOpts, Event};
+use crate::ytdlp::{self, DownloadOpts, Event, ProbeOpts};
 
 // ── 解析 ───────────────────────────────────────────────────────
 
@@ -24,13 +24,28 @@ pub struct ProbeCmd {
 fn run_probe(app: &ProbeCmd, ctx: &Context) -> Result<Value, AppError> {
     let s = settings::load();
     ctx.log(LogLevel::Info, "正在解析…");
-    let info = ytdlp::probe(
-        &app.url,
-        s.cookies_from_browser.as_deref(),
-        s.proxy.as_deref(),
-    )
+    let outcome = ytdlp::probe(&ProbeOpts {
+        url: app.url.clone(),
+        cookies_from_browser: s.cookies_from_browser.clone(),
+        proxy: s.proxy.clone(),
+        impersonate: s.impersonate.clone(),
+    })
     .map_err(AppError::Runtime)?;
-    let out = json!(info);
+    let info = outcome.info;
+    let site = crate::sites::match_url(&app.url);
+    if outcome.strategy.applied != "default" {
+        ctx.log(
+            LogLevel::Info,
+            format!("解析策略: {}", outcome.strategy.label),
+        );
+    }
+    // 保持 probe 的输出形状向后兼容：视频信息仍在顶层（title / formats / …），
+    // 只在旁边补上 site 与 strategy 两个键。MCP 调用方照旧读 info.title。
+    let mut out = serde_json::to_value(&info).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("site".into(), json!(site));
+        obj.insert("strategy".into(), json!(outcome.strategy));
+    }
     ctx.done(out.clone(), 0);
     Ok(out)
 }
@@ -44,12 +59,14 @@ pub struct FormatsCmd {
 
 fn run_formats(app: &FormatsCmd, ctx: &Context) -> Result<Value, AppError> {
     let s = settings::load();
-    let info = ytdlp::probe(
-        &app.url,
-        s.cookies_from_browser.as_deref(),
-        s.proxy.as_deref(),
-    )
-    .map_err(AppError::Runtime)?;
+    let info = ytdlp::probe(&ProbeOpts {
+        url: app.url.clone(),
+        cookies_from_browser: s.cookies_from_browser.clone(),
+        proxy: s.proxy.clone(),
+        impersonate: s.impersonate.clone(),
+    })
+    .map_err(AppError::Runtime)?
+    .info;
     ctx.log(LogLevel::Info, format!("{}（{}）", info.title, info.extractor));
     for f in &info.formats {
         let size = f
@@ -116,6 +133,7 @@ fn run_download(app: &DownloadCmd, ctx: &Context) -> Result<Value, AppError> {
         output_dir: out_dir.clone(),
         cookies_from_browser: s.cookies_from_browser.clone(),
         proxy: s.proxy.clone(),
+        impersonate: s.impersonate.clone(),
     };
 
     ctx.log(LogLevel::Info, format!("输出目录: {}", out_dir.display()));
@@ -258,6 +276,8 @@ pub struct SettingsSetCmd {
     /// 同时下载数
     #[arg(min = 1, max = 16)]
     pub concurrency: Option<usize>,
+    /// 浏览器指纹伪装目标（chrome / safari / firefox …；填 none 关闭）
+    pub impersonate: Option<String>,
 }
 
 fn run_settings_set(app: &SettingsSetCmd, ctx: &Context) -> Result<Value, AppError> {
@@ -283,6 +303,14 @@ fn run_settings_set(app: &SettingsSetCmd, ctx: &Context) -> Result<Value, AppErr
     }
     if let Some(n) = app.concurrency {
         s.concurrency = n.max(1);
+    }
+    if let Some(v) = app.impersonate.as_ref() {
+        let t = v.trim();
+        s.impersonate = if t.is_empty() || t == "none" {
+            None
+        } else {
+            Some(t.to_string())
+        };
     }
     settings::save(&s).map_err(AppError::Runtime)?;
     settings::ensure_output_dir(&s).map_err(AppError::Runtime)?;

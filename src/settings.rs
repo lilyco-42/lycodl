@@ -14,6 +14,11 @@ pub struct Settings {
     pub proxy: Option<String>,
     /// 同时下载数
     pub concurrency: usize,
+    /// 浏览器指纹伪装目标（如 chrome / safari；None = 不开）
+    ///
+    /// 这是兜底手段：只有站点了 Cloudflare 之类的前置防护、裸请求被 403 时才需要。
+    /// 默认关着 —— 它对绝大多数站点没有任何提升，反而多一层伪装开销。
+    pub impersonate: Option<String>,
 }
 
 impl Default for Settings {
@@ -23,6 +28,7 @@ impl Default for Settings {
             cookies_from_browser: None,
             proxy: None,
             concurrency: 2,
+            impersonate: None,
         }
     }
 }
@@ -53,6 +59,9 @@ pub fn load() -> Settings {
     }
     if s.proxy.as_deref().is_some_and(|v| v.trim().is_empty()) {
         s.proxy = None;
+    }
+    if s.impersonate.as_deref().is_some_and(|v| v.trim().is_empty()) {
+        s.impersonate = None;
     }
     s
 }

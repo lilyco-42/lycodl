@@ -12,11 +12,13 @@
 
 mod api;
 mod assets;
+mod caps;
 mod commands;
 mod jobs;
 mod paths;
 mod policy;
 mod settings;
+mod sites;
 mod ytdlp;
 
 use std::sync::Arc;

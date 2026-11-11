@@ -310,6 +310,7 @@ impl JobStore {
             output_dir: out_dir,
             cookies_from_browser: req.settings.cookies_from_browser.clone(),
             proxy: req.settings.proxy.clone(),
+            impersonate: req.settings.impersonate.clone(),
         };
 
         let store = self.clone();

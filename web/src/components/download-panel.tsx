@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AudioLines,
   Check,
+  ChevronDown,
   Clock,
   Film,
+  Info,
   Link2,
   ListVideo,
   LoaderCircle,
@@ -35,6 +37,9 @@ import {
   type DownloadMode,
   type DownloadQuality,
   type FormatInfo,
+  type ProbeStrategy,
+  type SiteInfo,
+  type SiteStatus,
   type VideoInfo,
 } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -96,16 +101,23 @@ function guessBestFormatId(formats: FormatInfo[]): string | null {
   return best ? best.formatId : null;
 }
 
+/** 最近一次已自动解析过的示例链接（跨组件卸载存活）。 */
+let lastHandledExample: string | null = null;
+
 interface DownloadPanelProps {
   onJobCreated: (jobId: string) => void;
+  /** 从「平台」页点示例链接回填过来的 URL，变化即自动解析。 */
+  exampleUrl?: string;
 }
 
 /** 解析 URL + 选择下载方式。 */
-export function DownloadPanel({ onJobCreated }: DownloadPanelProps) {
+export function DownloadPanel({ onJobCreated, exampleUrl }: DownloadPanelProps) {
   const [url, setUrl] = useState("");
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
   const [info, setInfo] = useState<VideoInfo | null>(null);
+  const [site, setSite] = useState<SiteInfo | null>(null);
+  const [strategy, setStrategy] = useState<ProbeStrategy | null>(null);
 
   const [mode, setMode] = useState<DownloadMode>("video");
   const [quality, setQuality] = useState<DownloadQuality>("best");
@@ -117,8 +129,8 @@ export function DownloadPanel({ onJobCreated }: DownloadPanelProps) {
   const formats = useMemo(() => info?.formats ?? [], [info]);
   const selectedFormat = formats.find((format) => format.formatId === formatId) ?? null;
 
-  async function handleProbe() {
-    const trimmed = url.trim();
+  async function handleProbe(target?: string) {
+    const trimmed = (target ?? url).trim();
     if (trimmed === "") {
       toast.error("请先粘贴视频链接");
       return;
@@ -129,6 +141,8 @@ export function DownloadPanel({ onJobCreated }: DownloadPanelProps) {
     try {
       const result = await api.probe(trimmed);
       setInfo(result.info);
+      setSite(result.site);
+      setStrategy(result.strategy);
       setMode("video");
       setQuality("best");
       setPlaylist(result.info.isPlaylist);
@@ -136,11 +150,31 @@ export function DownloadPanel({ onJobCreated }: DownloadPanelProps) {
       toast.success("解析成功", { description: result.info.title });
     } catch (cause) {
       setInfo(null);
+      setSite(null);
+      setStrategy(null);
       setProbeError(errorMessage(cause));
     } finally {
       setProbing(false);
     }
   }
+
+  // 外部（平台页）塞进来的示例链接：填进输入框并自动解析。
+  // 用模块级变量而不是 ref 去重：切页签会让本组件卸载重建，ref 会丢，导致同一示例被重复解析。
+  useEffect(() => {
+    if (exampleUrl === undefined || exampleUrl.trim() === "") {
+      // 置空表示「本轮示例已消费完毕」，允许再次点击同一个示例链接
+      lastHandledExample = null;
+      return;
+    }
+    if (lastHandledExample === exampleUrl) {
+      return;
+    }
+    lastHandledExample = exampleUrl;
+    setUrl(exampleUrl);
+    void handleProbe(exampleUrl);
+    // handleProbe 每次渲染都是新的函数，故意不进依赖，去重靠 lastHandledExample
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exampleUrl]);
 
   async function handleSubmit() {
     if (info === null) {
@@ -223,7 +257,7 @@ export function DownloadPanel({ onJobCreated }: DownloadPanelProps) {
           ) : null}
 
           {!probing && probeError === null && info !== null ? (
-            <VideoPreview info={info} />
+            <VideoPreview info={info} site={site} strategy={strategy} />
           ) : null}
         </CardContent>
       </Card>
@@ -376,7 +410,21 @@ function ProbeSkeleton() {
   );
 }
 
-function VideoPreview({ info }: { info: VideoInfo }) {
+const SITE_STATUS_ALERT_TITLE: Partial<Record<SiteStatus, string>> = {
+  "needs-cookies": "该平台需要 Cookie",
+  "needs-login": "该平台需要登录",
+  experimental: "该平台支持不保证",
+};
+
+function VideoPreview({
+  info,
+  site,
+  strategy,
+}: {
+  info: VideoInfo;
+  site: SiteInfo | null;
+  strategy: ProbeStrategy | null;
+}) {
   return (
     <div className="space-y-3 rounded-xl border border-border bg-card p-3">
       <div className="flex flex-col gap-4 sm:flex-row">
@@ -399,6 +447,7 @@ function VideoPreview({ info }: { info: VideoInfo }) {
           <p className="line-clamp-2 text-sm font-medium text-foreground">{info.title}</p>
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant="secondary">{info.extractor}</Badge>
+            {site !== null ? <Badge variant="outline">{site.name}</Badge> : null}
             {info.uploader !== null && info.uploader !== "" ? (
               <span className="truncate text-xs text-muted-foreground">{info.uploader}</span>
             ) : null}
@@ -435,6 +484,110 @@ function VideoPreview({ info }: { info: VideoInfo }) {
             </div>
           ))}
         </div>
+      ) : null}
+
+      {site !== null ? (
+        site.status !== "ready" ? (
+          <div className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+            <p className="text-xs font-medium text-amber-200">
+              {SITE_STATUS_ALERT_TITLE[site.status] ?? "该平台支持不保证"}
+            </p>
+            {site.tips.map((tip) => (
+              <p
+                key={tip}
+                className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-200/80"
+              >
+                <Info className="mt-0.5 size-3 shrink-0" />
+                <span className="break-words">{tip}</span>
+              </p>
+            ))}
+          </div>
+        ) : site.tips.length > 0 ? (
+          <ul className="space-y-1">
+            {site.tips.map((tip) => (
+              <li
+                key={tip}
+                className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground"
+              >
+                <Info className="mt-0.5 size-3 shrink-0" />
+                <span className="break-words">{tip}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null
+      ) : null}
+
+      {strategy !== null ? <StrategyTrace strategy={strategy} /> : null}
+    </div>
+  );
+}
+/** 默认配置一次成功是常态，没必要打扰用户；只有试过多种方式才展开明细。 */
+function shouldShowTrace(strategy: ProbeStrategy): boolean {
+  const { attempts } = strategy;
+  if (attempts.length === 0) {
+    return false;
+  }
+  if (strategy.applied === "default" && attempts.length === 1 && attempts[0].ok) {
+    return false;
+  }
+  return true;
+}
+
+function StrategyTrace({ strategy }: { strategy: ProbeStrategy }) {
+  const [open, setOpen] = useState(false);
+
+  if (!shouldShowTrace(strategy)) {
+    return null;
+  }
+
+  const attempts = strategy.attempts;
+  const failed = attempts.filter((attempt) => !attempt.ok).length;
+
+  return (
+    <div className="space-y-1.5">
+      {strategy.applied !== "default" ? (
+        <p className="text-[11px] text-muted-foreground/70">解析策略：{strategy.label}</p>
+      ) : null}
+
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-1 rounded text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+      >
+        试了 {attempts.length} 种方式
+        {failed > 0 ? <span className="text-muted-foreground/60">（{failed} 个失败）</span> : null}
+        <ChevronDown
+          className={cn("size-3 transition-transform duration-200", open && "rotate-180")}
+        />
+      </button>
+
+      {open ? (
+        <ul className="space-y-1.5 rounded-lg border border-border bg-muted/20 p-2">
+          {attempts.map((attempt, index) => (
+            <li key={attempt.name + "-" + index} className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-foreground">{attempt.label}</span>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "ml-auto",
+                    attempt.ok
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                      : "border-amber-500/30 bg-amber-500/10 text-amber-300",
+                  )}
+                >
+                  {attempt.ok ? "成功" : "失败"}
+                </Badge>
+              </div>
+              {!attempt.ok && attempt.error !== null && attempt.error !== "" ? (
+                <p className="line-clamp-2 font-mono text-[11px] break-words whitespace-pre-wrap text-muted-foreground">
+                  {attempt.error}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
   );

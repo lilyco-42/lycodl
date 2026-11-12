@@ -275,7 +275,9 @@ jobs:
             if curl -fsS http://127.0.0.1:18799/api/health >health.json 2>/dev/null; then ok=1; break; fi
             sleep 0.5
           done
-          kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null
+          # 子进程是被 SIGTERM 杀掉的，wait 返回 143；bash -e 下必须吞掉，否则脚本在断言前就以 143 退出
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
           test "$ok" -eq 1 || { echo "server did not come up"; cat smoke.log; exit 1; }
           echo "--- /api/health ---"; cat health.json
           echo

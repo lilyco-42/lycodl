@@ -258,6 +258,41 @@ docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr
 
 两类错误都会被翻译成中文提示，告诉你下一步点哪里。
 
+## 浏览器扩展（可选插件）
+
+把视频页「一键发送」到本机 lycodl，不用切到网页控制台。扩展只连 `127.0.0.1` / `localhost`，不向任何外部服务器发数据。
+
+**为什么需要额外的鉴权？** 浏览器扩展的 Origin 是 `chrome-extension://<id>`，和网页同源策略不兼容，所以后端单独开了一套窄白名单：
+
+- 扩展请求必须带 `X-Lycodl-Token` 头，令牌在 **设置 → 浏览器扩展** 卡片里复制（只显示前 8 位，可重新生成）；令牌文件落在 `~/.local/share/lycodl/plugin.token`，权限 `0600`；轮换时内存与落盘同步更新。
+- 后端只对 `chrome-extension://` / `moz-extension://` 放行，并回显 CORS 头（含 `Access-Control-Allow-Private-Network: true`，绕过 Chrome 私有网络预检）；其它网页 Origin 一律 `403`。
+- 扩展**不能**自己轮换令牌（`/api/plugin-token` 对扩展 Origin 返回 `403`），只能由本机网页设置页读写，避免 JS 自提权限。
+- 预检 `OPTIONS` 直接 `204` 放行，不校验令牌，因为预检不带自定义头。
+
+**安全边界因此更窄一层**：扩展能调的也只是 `/api/probe` 与 `/api/download`（同源网页 UI 能做的子集），服务依旧只绑回环。
+
+### 装扩展
+
+`extension/` 目录是已打包好的 MV3 扩展（manifest / background.js / popup / 图标齐全）：
+
+1. 打开 `chrome://extensions`（或 `edge://extensions`），右上角打开「开发者模式」。
+2. 「加载已解压的扩展程序」，选 `/home/lilyco/code/lycodl/extension`。
+3. 打开 lycodl 网页控制台 → **设置 → 浏览器扩展**，复制插件令牌，粘到扩展弹窗里。
+4. 弹窗里选「视频 / 音频」模式，点「测试连接」确认 `200`。端口默认自动发现（扫 8765–8785，命中 `/api/health` 且 `name==="lycodl"`）。
+
+### 用法
+
+- **弹窗**：点工具栏图标 → 填好令牌/端口/模式 → 在 YouTube 等页面点「发送当前页面」。
+- **右键菜单**：在链接 / 视频 / 音频 / 页面上右键 → 「发送到 lycodl」。
+- **快捷键**：`Alt+Shift+L` 发送当前页。
+- 发送是两段式：先用 `/api/probe` 解析（带直链兜底 `direct` 原样回传），成功后再 `/api/download`；结果走系统通知，任务进度仍在网页控制台看。
+
+### 已知边界
+
+- 扩展不读网页内容（没有 content script），纯靠后台 service worker 调本机 API；所以「当前页」只能是地址栏 URL，无法自动抓页面内嵌的播放器。
+- 令牌是本地信任凭证，等同「允许本机任意网页以外的扩展往 lycodl 塞任务」；只在你自己机器上用，别把令牌贴出去。
+- 若改了 lycodl 端口（`web.port`），扩展会自动重新发现；手动填了固定端口就固定用那个。
+
 ## 安全边界
 
 lilyco 的安全门在命令注册时就固定了，分级如下：
@@ -279,9 +314,11 @@ src/
   caps.rs      运行环境自检（JS 运行时 / ffmpeg / 指纹伪装 / Cookie 源 / 提取器 / 磁盘）
   sites.rs     36 个主流站点目录 + 按 URL 匹配 + 按站记住生效的解析策略
   browser.rs   CDP 浏览器桥（Cookie / UA / 媒体嗅探）+ FlareSolverr HTML 直链提取
+  plugin.rs    浏览器扩展令牌 / CORS 白名单 / 私有网络预检中间件
   policy.rs    DownloadOnly 与 Agent 两条安全策略
   settings.rs  配置读写
   paths.rs     目录约定
   assets.rs    include_dir 托管前端产物
 web/           React 19 + TS + Tailwind v4 + shadcn/ui
+extension/     MV3 浏览器扩展（后台 service worker 调本机 API）
 ```

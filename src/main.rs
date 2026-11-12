@@ -17,6 +17,7 @@ mod caps;
 mod commands;
 mod jobs;
 mod paths;
+mod plugin;
 mod policy;
 mod settings;
 mod sites;

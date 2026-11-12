@@ -1,5 +1,17 @@
 import { useEffect, useState } from "react";
-import { Cpu, LoaderCircle, RotateCw, Save, Sparkles, Server, RefreshCw } from "lucide-react";
+import {
+  Cpu,
+  Copy,
+  KeyRound,
+  LoaderCircle,
+  Puzzle,
+  RefreshCw,
+  RotateCw,
+  Save,
+  Server,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,7 +29,8 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorAlert } from "@/components/error-alert";
-import { errorMessage } from "@/lib/api";
+import { api, errorMessage } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { useSettings } from "@/hooks/useSettings";
 import { useYtDlp } from "@/hooks/useYtDlp";
 
@@ -260,6 +273,8 @@ export function SettingsPanel() {
         </CardContent>
       </Card>
 
+      <ExtensionCard />
+
       <YtDlpCard />
     </div>
   );
@@ -361,6 +376,126 @@ function YtDlpCard() {
             </div>
           </>
         ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** 浏览器扩展：只显示令牌前 8 位，复制 / 轮换都走后端。 */
+function ExtensionCard() {
+  const [preview, setPreview] = useState<string | null>(null);
+  const [copying, setCopying] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const result = await api.pluginToken();
+        if (alive) {
+          setPreview(result.token);
+          setError(null);
+        }
+      } catch (cause) {
+        if (alive) {
+          setPreview(null);
+          setError(errorMessage(cause));
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function handleCopy() {
+    setCopying(true);
+    try {
+      const result = await api.pluginToken();
+      setPreview(result.token);
+      const ok = await copyText(result.token);
+      if (!ok) {
+        toast.error("复制失败", { description: "浏览器拒绝了剪贴板写入，请手动从扩展令牌接口取值" });
+        return;
+      }
+      toast.success("已复制插件令牌", { description: "粘贴到扩展弹窗的令牌输入框" });
+    } catch (cause) {
+      toast.error("获取插件令牌失败", { description: errorMessage(cause) });
+    } finally {
+      setCopying(false);
+    }
+  }
+
+  async function handleRotate() {
+    setRotating(true);
+    try {
+      const result = await api.rotatePluginToken();
+      setPreview(result.token);
+      toast.warning("已重新生成插件令牌", {
+        description: "已配置的扩展需要重新粘贴令牌才能继续发送",
+      });
+    } catch (cause) {
+      toast.error("重新生成失败", { description: errorMessage(cause) });
+    } finally {
+      setRotating(false);
+    }
+  }
+
+  const masked = preview === null ? null : preview.slice(0, 8) + "••••••••";
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Puzzle className="size-4 text-muted-foreground" />
+          浏览器扩展
+          <Badge variant="outline">可选</Badge>
+        </CardTitle>
+        <CardDescription>
+          装好扩展后，在视频页点扩展图标或右键「发送到 lycodl」，即可把链接丢给本机下载器。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error !== null ? <ErrorAlert title="获取插件令牌失败" message={error} /> : null}
+
+        <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <KeyRound className="size-3.5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">当前令牌</span>
+            </div>
+            <span className="font-mono text-xs text-foreground">
+              {masked === null ? "未获取" : masked}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => void handleCopy()} disabled={copying || rotating}>
+            {copying ? <LoaderCircle className="animate-spin" /> : <Copy />}
+            {copying ? "复制中…" : "复制插件令牌"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void handleRotate()}
+            disabled={rotating || copying}
+          >
+            {rotating ? <LoaderCircle className="animate-spin" /> : <RotateCw />}
+            {rotating ? "生成中…" : "重新生成令牌"}
+          </Button>
+        </div>
+
+        <p className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+          <ShieldCheck className="mt-0.5 size-3 shrink-0" />
+          <span className="break-words">
+            点「复制插件令牌」后，粘贴到扩展弹窗的令牌输入框即可（扩展只连 127.0.0.1 / localhost，
+            令牌不会发给任何外部服务）。扩展的加载方法见仓库 <code className="font-mono">extension/README.md</code>
+            ：打开 <code className="font-mono">chrome://extensions</code> → 开启开发者模式 →
+            加载已解压的扩展程序 → 选择 <code className="font-mono">extension/</code> 目录；端口
+            8765–8785 会自动发现。
+          </span>
+        </p>
       </CardContent>
     </Card>
   );

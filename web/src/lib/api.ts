@@ -300,6 +300,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** 浏览器扩展用的访问令牌（GET 取当前值；POST 轮换） */
+export interface PluginToken {
+  token: string;
+  allowedOrigins: string[];
+}
+
 export const api = {
   health: () => request<Health>("/api/health"),
 
@@ -309,6 +315,15 @@ export const api = {
     request<SettingsResponse>("/api/settings", {
       method: "PUT",
       body: JSON.stringify(patch),
+    }),
+
+  // 浏览器扩展令牌：GET 取当前值，POST 轮换（会让已配置的扩展失效）
+  pluginToken: () => request<PluginToken>("/api/plugin-token"),
+
+  rotatePluginToken: () =>
+    request<PluginToken>("/api/plugin-token", {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
 
   ytdlp: (check = false) => request<YtdlpInfo>(check ? "/api/ytdlp?check=1" : "/api/ytdlp"),

@@ -89,6 +89,8 @@ pub struct AppState {
     pub settings: Arc<RwLock<Settings>>,
     /// 上游内核版本缓存（热更新红利的「红利」一半靠它：不用用户去点才告诉你有没有新版）
     pub kernel: KernelWatch,
+    /// 浏览器扩展令牌（内存副本；落盘在 data_dir/plugin.token）
+    pub plugin_token: crate::plugin::SharedToken,
 }
 
 impl AppState {
@@ -98,6 +100,7 @@ impl AppState {
             store: Arc::new(store),
             settings: Arc::new(RwLock::new(settings)),
             kernel: KernelWatch::default(),
+            plugin_token: Arc::new(RwLock::new(crate::plugin::load_or_create_token())),
         }
     }
 
@@ -109,6 +112,7 @@ impl AppState {
 // ── 路由 ───────────────────────────────────────────────────────
 
 pub fn router(state: AppState) -> Router {
+    let plugin_token = state.plugin_token.clone();
     Router::new()
         .route("/api/health", get(health))
         .route("/api/settings", get(get_settings).put(put_settings))
@@ -128,11 +132,33 @@ pub fn router(state: AppState) -> Router {
         .route("/api/caps", get(caps))
         .route("/api/sites", get(sites))
         .route("/api/extractors", get(extractors))
+        .route("/api/plugin-token", get(plugin_token_get).post(plugin_token_rotate))
+        .layer(axum::middleware::from_fn_with_state(plugin_token, crate::plugin::guard))
         .with_state(state)
         .fallback(static_file)
 }
 
 // ── 元信息 ─────────────────────────────────────────────────────
+
+// ── 浏览器扩展令牌（同源 Web UI 才能读写）────────────────────────
+
+async fn plugin_token_get(State(st): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "token": st.plugin_token.read().map(|s| s.clone()).unwrap_or_default(),
+        "allowedOrigins": ["chrome-extension://", "moz-extension://"],
+    }))
+}
+
+async fn plugin_token_rotate(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let t = crate::plugin::rotate_token().map_err(ApiError::internal)?;
+    if let Ok(mut w) = st.plugin_token.write() {
+        *w = t.clone();
+    }
+    Ok(Json(json!({
+        "token": t,
+        "allowedOrigins": ["chrome-extension://", "moz-extension://"],
+    })))
+}
 
 async fn health() -> Json<Value> {
     let kernel = ytdlp::locate().ok();

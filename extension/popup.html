@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>lycodl 发送到下载器</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0b0f;
+        --card: #15151c;
+        --border: #2a2a35;
+        --fg: #f4f4f5;
+        --muted: #a1a1aa;
+        --accent: #8b5cf6;
+        --ok: #34d399;
+        --err: #f87171;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 14px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: "Geist", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .logo {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: var(--accent);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 700;
+        color: #fff;
+      }
+      h1 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .sub {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .group {
+        margin-bottom: 10px;
+      }
+      label.caption {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .row {
+        display: flex;
+        gap: 6px;
+      }
+      input[type="password"],
+      input[type="text"],
+      input[type="number"] {
+        flex: 1;
+        min-width: 0;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--card);
+        color: var(--fg);
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        outline: none;
+      }
+      input:focus {
+        border-color: var(--accent);
+      }
+      button {
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--card);
+        color: var(--fg);
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        font-family: inherit;
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button.primary {
+        width: 100%;
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 600;
+        padding: 8px 10px;
+      }
+      button.ghost {
+        background: transparent;
+      }
+      .modes {
+        display: flex;
+        gap: 6px;
+      }
+      .modes label {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        padding: 6px 4px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--card);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .modes input {
+        accent-color: var(--accent);
+        margin: 0;
+      }
+      #status {
+        margin-top: 10px;
+        padding: 8px;
+        min-height: 18px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--card);
+        color: var(--muted);
+        font-size: 11.5px;
+        line-height: 1.5;
+        word-break: break-word;
+        white-space: pre-wrap;
+      }
+      #status.ok {
+        color: var(--ok);
+        border-color: rgba(52, 211, 153, 0.35);
+      }
+      #status.err {
+        color: var(--err);
+        border-color: rgba(248, 113, 113, 0.35);
+      }
+      .hint {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+      .hint code {
+        color: var(--fg);
+        font-family: ui-monospace, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="logo">L</div>
+      <div>
+        <h1>lycodl 发送到下载器</h1>
+        <p class="sub">只连本机 127.0.0.1</p>
+      </div>
+    </header>
+
+    <div class="group">
+      <label class="caption" for="token">插件令牌（从 lycodl 网页设置页复制）</label>
+      <div class="row">
+        <input id="token" type="password" placeholder="64 位十六进制令牌" spellcheck="false" autocomplete="off" />
+        <button id="toggle-token" type="button" class="ghost" title="显示 / 隐藏令牌">显示</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <label class="caption" for="port">端口（留空 = 自动发现 8765-8785）</label>
+      <input id="port" type="number" min="1" max="65535" placeholder="自动" />
+    </div>
+
+    <div class="group">
+      <label class="caption">下载模式</label>
+      <div class="modes">
+        <label><input type="radio" name="mode" value="video" checked /> 视频</label>
+        <label><input type="radio" name="mode" value="audio" /> 音频</label>
+      </div>
+    </div>
+
+    <div class="group row">
+      <button id="save" type="button" class="ghost">保存设置</button>
+      <button id="test" type="button" class="ghost">测试连接</button>
+    </div>
+
+    <button id="send" type="button" class="primary">发送当前页面</button>
+
+    <div id="status">就绪。填好令牌后点「测试连接」。</div>
+
+    <p class="hint">
+      也可以在视频页右键 →「发送到 lycodl」，或按 <code>Alt+Shift+L</code>。令牌可在网页设置页重新生成（重生成后需要回到这里重新粘贴）。
+    </p>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

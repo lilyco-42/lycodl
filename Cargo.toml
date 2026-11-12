@@ -25,6 +25,9 @@ directories = "6"
 libc = "0.2"
 tungstenite = "0.29"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
 [profile.dev]
 opt-level = 0
 incremental = true

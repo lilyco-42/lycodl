@@ -227,3 +227,389 @@ pub async fn guard(State(token): State<SharedToken>, req: Request, next: Next) -
     cors_headers(resp.headers_mut(), &origin, Some(DEFAULT_ALLOW_HEADERS));
     resp
 }
+
+
+// ── 单元测试 ───────────────────────────────────────────────────────────────
+// 这个 crate 只有 bin target（没有 lib.rs），所以测试必须写在 crate 内部。
+// 覆盖：纯函数 + 令牌落盘 + 真实 guard 中间件的 HTTP 行为（oneshot，无外网）。
+
+#[cfg(test)]
+mod tests {
+    use super::*; // token_eq / is_* / random_hex / guard / 常量 / Request / header / StatusCode / Method / State
+    use axum::body::Body;
+    use axum::middleware::from_fn_with_state;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::util::ServiceExt as _; // .oneshot(...)
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// 每个测试独占一个数据目录，避免并行测试互相踩 / 改到真实 HOME。
+    fn unique_data_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "lycodl-test-{}-{}",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("create temp data dir");
+        d
+    }
+
+    // ── 纯函数 ──
+
+    #[test]
+    fn token_eq_is_length_and_content_sensitive() {
+        let t = "a".repeat(64);
+        assert!(token_eq(&t, &t));
+        assert!(!token_eq("abc", "abcd")); // 长度不同
+        let mut wrong = t.clone();
+        wrong.replace_range(63..64, "b");
+        assert!(!token_eq(&t, &wrong)); // 末位不同
+        // 两个空串被判定为相等（调用方在 guard 里先用 is_empty 短路，不会真走到这里）
+    }
+
+    #[test]
+    fn extension_origin_only_accepts_browser_schemes() {
+        assert!(is_extension_origin("chrome-extension://abcdefghijklmnop"));
+        assert!(is_extension_origin("moz-extension://1234-5678"));
+        assert!(!is_extension_origin("https://evil.example"));
+        assert!(!is_extension_origin("http://127.0.0.1:8766"));
+        assert!(is_extension_origin("chrome-extension://")); // 裸前缀也算匹配；但 guard 里仍需有效令牌，无安全影响
+        assert!(!is_extension_origin("CHROME-EXTENSION://abc")); // 大小写敏感，按规范 scheme 小写
+    }
+
+    #[test]
+    fn host_of_strips_port_and_keeps_ipv6_brackets() {
+        assert_eq!(host_of("127.0.0.1:8766"), "127.0.0.1");
+        assert_eq!(host_of("localhost"), "localhost");
+        // rsplit_once(':') 对 "[::1]:8766" 会得到 "[::1]"（方括号保留），is_local 认得
+        assert_eq!(host_of("[::1]:8766"), "[::1]");
+    }
+
+    #[test]
+    fn same_origin_rejects_dns_rebinding_and_remote_hosts() {
+        // 回环 Host + 回环 Origin（含端口不同）→ 放行
+        assert!(is_same_origin("http://127.0.0.1:5173", "127.0.0.1:8766"));
+        assert!(is_same_origin("http://localhost:8766", "127.0.0.1:8766"));
+        assert!(is_same_origin("http://[::1]:8766", "[::1]:8766"));
+        // Host 不是回环 → 一律拒（DNS rebinding 把恶意域名指到本机）
+        assert!(!is_same_origin("http://127.0.0.1:8766", "evil.example:8766"));
+        assert!(!is_same_origin("http://127.0.0.1:8766", "192.168.1.5:8766"));
+        // Origin 是远程站点
+        assert!(!is_same_origin("https://evil.example", "127.0.0.1:8766"));
+        // 非 http(s) scheme
+        assert!(!is_same_origin("file:///etc/passwd", "127.0.0.1:8766"));
+    }
+
+    #[test]
+    fn random_hex_is_correct_length_and_charset() {
+        let s = random_hex(32);
+        assert_eq!(s.len(), 64);
+        assert!(s.bytes().all(|b| b.is_ascii_hexdigit()));
+        let s2 = random_hex(32);
+        assert_ne!(s, s2); // 两次不同（极低概率碰撞）
+    }
+
+    // ── 令牌落盘 / 轮换 ──
+
+    #[test]
+    fn token_is_created_persisted_and_reloaded() {
+        let dir = unique_data_dir();
+        std::env::set_var("LYCODL_DATA_DIR", &dir);
+        let t = load_or_create_token();
+        assert_eq!(t.len(), 64);
+        assert!(t.bytes().all(|b| b.is_ascii_hexdigit()));
+        let f = dir.join("plugin.token");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), t);
+        // 再读一次应复用，不重新生成
+        assert_eq!(load_or_create_token(), t);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "plugin.token 必须是 0600");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotate_token_changes_disk_and_memory_value() {
+        let dir = unique_data_dir();
+        std::env::set_var("LYCODL_DATA_DIR", &dir);
+        let old = load_or_create_token();
+        let new = rotate_token().expect("rotate");
+        assert_ne!(old, new);
+        assert_eq!(new.len(), 64);
+        assert_eq!(std::fs::read_to_string(dir.join("plugin.token")).unwrap(), new);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupted_token_is_regenerated() {
+        let dir = unique_data_dir();
+        std::env::set_var("LYCODL_DATA_DIR", &dir);
+        std::fs::write(dir.join("plugin.token"), "garbage-not-hex").unwrap();
+        let t = load_or_create_token();
+        assert_eq!(t.len(), 64);
+        assert!(t.bytes().all(|b| b.is_ascii_hexdigit()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 真实 guard 中间件的 HTTP 行为 ──
+
+    /// 用真实 guard 包一层最小路由；内层只回 200 "ok"，这样状态码完全由 guard 决定。
+    fn test_app() -> (Router, SharedToken, String) {
+        let token: SharedToken = Arc::new(RwLock::new("0123456789abcdef".repeat(4)));
+        let app: Router = Router::new()
+            .route("/api/health", get(|| async { "ok" }))
+            .route("/api/plugin-token", get(|| async { "secret-page" }))
+            .route("/index.html", get(|| async { "page" }))
+            .layer(from_fn_with_state(token.clone(), guard));
+        let expected = token.read().unwrap().clone();
+        (app, token, expected)
+    }
+
+    fn req(
+        method: axum::http::Method,
+        path: &str,
+        origin: Option<&str>,
+        host: &str,
+        token_hdr: Option<&str>,
+        extra: &[(&str, &str)],
+    ) -> Request<Body> {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, host);
+        if let Some(o) = origin {
+            b = b.header(header::ORIGIN, o);
+        }
+        if let Some(t) = token_hdr {
+            b = b.header(TOKEN_HEADER, t);
+        }
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::empty()).unwrap()
+    }
+
+    fn has_pna(r: &axum::response::Response) -> bool {
+        r.headers()
+            .get(ALLOW_PRIVATE_NETWORK)
+            .and_then(|v| v.to_str().ok())
+            == Some("true")
+    }
+
+    #[tokio::test]
+    async fn no_origin_is_same_site_and_needs_no_token() {
+        let (app, _, _) = test_app();
+        let r = app
+            .oneshot(req(axum::http::Method::GET, "/api/health", None, "127.0.0.1:8766", None, &[]))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+    }
+
+    #[tokio::test]
+    async fn extension_without_token_is_401() {
+        let (app, _, _) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::GET,
+                "/api/health",
+                Some("chrome-extension://abcdefghijklmnop"),
+                "127.0.0.1:8766",
+                None,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert!(has_pna(&r)); // 错误响应也带 CORS/PNA
+        assert_eq!(
+            r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "chrome-extension://abcdefghijklmnop"
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_with_wrong_token_is_401() {
+        let (app, _, _) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::GET,
+                "/api/health",
+                Some("chrome-extension://abcdefghijklmnop"),
+                "127.0.0.1:8766",
+                Some("deadbeef"),
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn extension_with_valid_token_gets_full_cors() {
+        let (app, _, tok) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::GET,
+                "/api/health",
+                Some("moz-extension://1234-5678"),
+                "127.0.0.1:8766",
+                Some(&tok),
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(
+            r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "moz-extension://1234-5678"
+        );
+        assert!(has_pna(&r));
+        assert_eq!(r.headers().get(header::VARY).unwrap(), "Origin");
+        assert_eq!(
+            r.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS).unwrap(),
+            ALLOW_METHODS
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_cannot_rotate_the_token_itself() {
+        let (app, _, tok) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::GET,
+                "/api/plugin-token",
+                Some("chrome-extension://abcdefghijklmnop"),
+                "127.0.0.1:8766",
+                Some(&tok),
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn extension_cannot_reach_non_api_paths() {
+        let (app, _, tok) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::GET,
+                "/index.html",
+                Some("chrome-extension://abcdefghijklmnop"),
+                "127.0.0.1:8766",
+                Some(&tok),
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn malicious_web_origin_is_403() {
+        let (app, _, _) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::POST,
+                "/api/download",
+                Some("https://evil.example"),
+                "127.0.0.1:8766",
+                None,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn same_origin_needs_no_token() {
+        let (app, _, _) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::GET,
+                "/api/health",
+                Some("http://127.0.0.1:8766"),
+                "127.0.0.1:8766",
+                None,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_host_is_rejected() {
+        // Host 是外部域名（rebinding），即便 Origin 写成回环也拒
+        let (app, _, _) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::GET,
+                "/api/health",
+                Some("http://127.0.0.1:8766"),
+                "attacker.example:8766",
+                None,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn options_preflight_is_204_with_pna_and_no_token_needed() {
+        let (app, _, _) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::OPTIONS,
+                "/api/download",
+                Some("chrome-extension://abcdefghijklmnop"),
+                "127.0.0.1:8766",
+                None, // 预检按规范不带自定义头
+                &[(header::ACCESS_CONTROL_REQUEST_METHOD.as_str(), "POST"),
+                  (header::ACCESS_CONTROL_REQUEST_HEADERS.as_str(), "content-type, x-lycodl-token")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "chrome-extension://abcdefghijklmnop"
+        );
+        assert!(has_pna(&r), "必须回 Access-Control-Allow-Private-Network: true");
+        assert_eq!(
+            r.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS).unwrap(),
+            "content-type, x-lycodl-token"
+        );
+        assert_eq!(
+            r.headers().get(header::ACCESS_CONTROL_MAX_AGE).unwrap(),
+            "600"
+        );
+    }
+
+    #[tokio::test]
+    async fn options_from_malicious_origin_is_403() {
+        let (app, _, _) = test_app();
+        let r = app
+            .oneshot(req(
+                axum::http::Method::OPTIONS,
+                "/api/download",
+                Some("https://evil.example"),
+                "127.0.0.1:8766",
+                None,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+}

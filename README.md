@@ -135,6 +135,35 @@ yt-dlp 认识 1398 个站点提取器（`--list-extractors` 实测 1755 行，�
 
 站点目录（`GET /api/sites`，36 个主流站点）里每个站点都带 `status` 与中文 `tips`，告诉你它属于上面哪一档、以及要配什么才能下。
 
+## 下载与二进制发布
+
+每次打 `v*` 标签（或手动 `workflow_dispatch`）会由 GitHub Actions 在
+[`lilyco-42/lycodl` Releases](https://github.com/lilyco-42/lycodl/releases) 自动构建并发布：
+
+| 平台 | 构件 | 说明 |
+| --- | --- | --- |
+| Linux x86_64 | `lycodl-linux-x64.tar.gz` | glibc 桌面机，解包后 `./lycodl --web` |
+| Linux aarch64 | `lycodl-linux-aarch64.tar.gz` | ARM 桌面 / 树莓派等 |
+| Windows x86_64 | `lycodl-windows-x64.zip` | `.exe`，解包后双击或 `lycodl.exe --web` |
+| macOS universal | `lycodl-macos-universal.tar.gz` | x86_64 + arm64 合并（Apple Silicon / Intel） |
+| Android aarch64 | `lycodl-android-aarch64.tar.gz` | **CLI 二进制**，放进 Termux 用（见下） |
+
+每个压缩包都含 `lycodl` 二进制 + `extension/` 浏览器扩展 + `README.md`。
+GitHub Actions 流水线见 `.github/workflows/release.yml`；构建前会先 `pnpm build` 生成
+`web/dist`（被 `.gitignore` 忽略，不进仓库），再编译进二进制。
+
+**Android 不是 App，是 Termux 命令行。** Android 上没法像桌面那样起 Web 控制台，发布的是
+原生 aarch64 CLI（用 NDK r26b 交叉，链接 `/system/bin/linker64`，GLIBC 那套 dynamic
+loader 在 Android 上跑不了）。用法：把 `lycodl` 推到手机，在 Termux 里
+`chmod +x lycodl && ./lycodl --help`，配合 `termux-api` 或 `tmux` 常驻即可。
+
+**iOS / 鸿蒙(HarmonyOS) 暂不出包。** 本仓库产物是「本地起 Web 控制台的 CLI 二进制」，这两个
+平台没有命令行运行环境，且各自的 App 上架需要 Apple / DevEco 签名与原生(Tauri)外壳，GitHub
+托管 Runner 提供不了。要支持它们，应另起 Tauri 工程（`tauri-plugin-cli` 把本二进制当后端），
+分别走 Xcode Cloud / DevEco 流水线——本流程已为 Linux/Windows/macOS/Android(CLI) 给出可复用的
+构建步骤。
+
+
 ## 反爬与直链兜底
 
 把话说在前面：没有哪个开关能「伪装浏览器」后通杀所有站点。实测里我们否掉了几条看似合理的路：

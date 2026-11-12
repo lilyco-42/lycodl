@@ -1136,11 +1136,12 @@ fn num_or_none(v: &str) -> Option<f64> {
 
 /// 杀掉整棵 yt-dlp 进程组（含 PyInstaller 再 fork 出来的真身）。
 fn kill_tree(child: &mut std::process::Child) {
-    let pid = child.id() as i32;
+    #[cfg(unix)]
     unsafe {
         // 进程组 id == setsid 后的 pid，负数表示「发给整个组」
-        libc::kill(-pid, libc::SIGKILL);
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
     }
+    #[cfg(not(unix))]
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -1206,6 +1207,7 @@ where
     // yt-dlp 官方 linux 包是 PyInstaller 单文件：启动后父进程会再 fork 一个真身。
     // 只 kill 父进程会留下孤儿继续下载、并且还握着 stdout 管道 —— 读线程永远等不到 EOF。
     // 所以把它放进独立进程组，取消时按组杀。
+    #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
         cmd.pre_exec(|| {

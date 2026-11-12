@@ -92,6 +92,7 @@ pub fn bridge(url: &str, wait_ms: u64) -> Result<BridgeOutcome, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
         cmd.pre_exec(|| {
@@ -104,9 +105,11 @@ pub fn bridge(url: &str, wait_ms: u64) -> Result<BridgeOutcome, String> {
     let result = run_bridge(&prof, url, wait_ms);
 
     // 整组杀掉：chromium 会 fork 出 zygote/renderer，只杀父进程会留下孤儿
+    #[cfg(unix)]
     unsafe {
         libc::kill(-(child.id() as i32), libc::SIGKILL);
     }
+    #[cfg(not(unix))]
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&prof);

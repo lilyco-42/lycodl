@@ -913,6 +913,7 @@ dependencies = [
 [[package]]
 name = "lilyco"
 version = "0.3.0"
+source = "git+https://github.com/lilyco-42/lilyco?tag=v0.3.2#60e92f2687e4438f34f30288381ade0d8c4ac933"
 dependencies = [
  "crossterm",
  "lilyco-cli",
@@ -927,6 +928,7 @@ dependencies = [
 [[package]]
 name = "lilyco-cli"
 version = "0.3.0"
+source = "git+https://github.com/lilyco-42/lilyco?tag=v0.3.2#60e92f2687e4438f34f30288381ade0d8c4ac933"
 dependencies = [
  "clap",
  "lilyco-core",
@@ -936,6 +938,7 @@ dependencies = [
 [[package]]
 name = "lilyco-core"
 version = "0.3.0"
+source = "git+https://github.com/lilyco-42/lilyco?tag=v0.3.2#60e92f2687e4438f34f30288381ade0d8c4ac933"
 dependencies = [
  "serde",
  "serde_json",
@@ -945,6 +948,7 @@ dependencies = [
 [[package]]
 name = "lilyco-macros"
 version = "0.3.0"
+source = "git+https://github.com/lilyco-42/lilyco?tag=v0.3.2#60e92f2687e4438f34f30288381ade0d8c4ac933"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -954,6 +958,7 @@ dependencies = [
 [[package]]
 name = "lilyco-mcp"
 version = "0.3.0"
+source = "git+https://github.com/lilyco-42/lilyco?tag=v0.3.2#60e92f2687e4438f34f30288381ade0d8c4ac933"
 dependencies = [
  "lilyco-core",
  "serde_json",
@@ -962,6 +967,7 @@ dependencies = [
 [[package]]
 name = "lilyco-tui"
 version = "0.3.0"
+source = "git+https://github.com/lilyco-42/lilyco?tag=v0.3.2#60e92f2687e4438f34f30288381ade0d8c4ac933"
 dependencies = [
  "crossterm",
  "lilyco-core",

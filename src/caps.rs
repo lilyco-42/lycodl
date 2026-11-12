@@ -447,6 +447,7 @@ pub fn disk(path: &Path) -> CapDisk {
     }
 }
 
+#[cfg(unix)]
 fn statvfs(path: &Path) -> (Option<u64>, Option<u64>) {
     use std::ffi::CString;
     let c = match CString::new(path.display().to_string()) {
@@ -465,6 +466,11 @@ fn statvfs(path: &Path) -> (Option<u64>, Option<u64>) {
         let total = (st.f_blocks as u64).saturating_mul(unit);
         (Some(free), Some(total))
     }
+}
+
+#[cfg(not(unix))]
+fn statvfs(_path: &Path) -> (Option<u64>, Option<u64>) {
+    (None, None)
 }
 
 // ── 汇总 ───────────────────────────────────────────────────────

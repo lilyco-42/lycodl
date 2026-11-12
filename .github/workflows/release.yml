@@ -1,0 +1,232 @@
+# ── lycodl 多平台打包 / 发布流水线 ──
+#
+# 触发：
+#   - push 到 v* 标签            → 构建全部平台并发布 GitHub Release
+#   - workflow_dispatch          → 手动触发（非标签时只上传构件，不建 Release）
+#
+# 产出构件（每个平台一个压缩包，内含 lycodl 二进制 + extension/ 浏览器扩展 + README）：
+#   - Linux   x86_64            （glibc）
+#   - Linux   aarch64           （cross 交叉编译）
+#   - Windows x86_64 (.exe)     （MSVC 原生）
+#   - macOS   universal         （x86_64 + arm64 lipo 合并）
+#   - Android aarch64 (CLI)      （Termux 可用；非 App，见下方说明）
+#
+# 关于 iOS / 鸿蒙(HarmonyOS)：本仓库产物是「本地起 Web 控制台的 CLI 二进制」，这两个平台
+# 没有命令行运行环境，且各自的 App 上架需要 Apple / DevEco 签名与原生(Tauri)外壳，
+# GitHub 托管 Runner 无法提供。自动化可安装包不在本 CI 范围——若要支持，应另起 Tauri 工程
+# （tauri-plugin-cli 把本二进制当后端），分别走 Xcode Cloud / DevEco 流水线。本流程已为
+# Linux/Windows/macOS/Android(CLI) 给出可复用的构建步骤。
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build web console
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Upload web/dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  linux-x64:
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-x64-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+      - name: Package
+        run: |
+          BIN=target/x86_64-unknown-linux-gnu/release/lycodl
+          strip "$BIN" || true
+          mkdir -p dist/lycodl-linux-x64
+          cp "$BIN" dist/lycodl-linux-x64/
+          cp -r extension dist/lycodl-linux-x64/
+          cp README.md dist/lycodl-linux-x64/
+          tar -C dist -czf lycodl-linux-x64.tar.gz lycodl-linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lycodl-linux-x64
+          path: lycodl-linux-x64.tar.gz
+
+  linux-aarch64:
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: houseabsolute/actions-rust-cross@v0
+        with:
+          target: aarch64-unknown-linux-gnu
+          args: --release
+      - name: Package
+        run: |
+          BIN=target/aarch64-unknown-linux-gnu/release/lycodl
+          aarch64-linux-gnu-strip "$BIN" 2>/dev/null || true
+          mkdir -p dist/lycodl-linux-aarch64
+          cp "$BIN" dist/lycodl-linux-aarch64/
+          cp -r extension dist/lycodl-linux-aarch64/
+          cp README.md dist/lycodl-linux-aarch64/
+          tar -C dist -czf lycodl-linux-aarch64.tar.gz lycodl-linux-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lycodl-linux-aarch64
+          path: lycodl-linux-aarch64.tar.gz
+
+  windows-x64:
+    needs: web
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/lycodl-windows-x64
+          Copy-Item target/x86_64-pc-windows-msvc/release/lycodl.exe dist/lycodl-windows-x64/
+          Copy-Item -Recurse extension dist/lycodl-windows-x64/
+          Copy-Item README.md dist/lycodl-windows-x64/
+          Compress-Archive -Path dist/lycodl-windows-x64/* -DestinationPath lycodl-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lycodl-windows-x64
+          path: lycodl-windows-x64.zip
+
+  macos:
+    needs: web
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build both arches
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          lipo -create -output target/release/lycodl \
+            target/x86_64-apple-darwin/release/lycodl \
+            target/aarch64-apple-darwin/release/lycodl
+          strip target/release/lycodl
+      - name: Package
+        run: |
+          mkdir -p dist/lycodl-macos-universal
+          cp target/release/lycodl dist/lycodl-macos-universal/
+          cp -r extension dist/lycodl-macos-universal/
+          cp README.md dist/lycodl-macos-universal/
+          tar -C dist -czf lycodl-macos-universal.tar.gz lycodl-macos-universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lycodl-macos-universal
+          path: lycodl-macos-universal.tar.gz
+
+  android:
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: houseabsolute/actions-rust-cross@v0
+        with:
+          target: aarch64-linux-android
+          args: --release
+      - name: Package
+        run: |
+          BIN=target/aarch64-linux-android/release/lycodl
+          mkdir -p dist/lycodl-android-aarch64
+          cp "$BIN" dist/lycodl-android-aarch64/
+          cp -r extension dist/lycodl-android-aarch64/
+          cp README.md dist/lycodl-android-aarch64/
+          tar -C dist -czf lycodl-android-aarch64.tar.gz lycodl-android-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lycodl-android-aarch64
+          path: lycodl-android-aarch64.tar.gz
+
+  release:
+    needs: [linux-x64, linux-aarch64, windows-x64, macos, android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lycodl-*
+          path: dist
+          merge-multiple: true
+      - name: List artifacts
+        run: ls -lh dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

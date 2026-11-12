@@ -230,6 +230,11 @@ jobs:
     needs: [linux-x64, web]
     steps:
       - uses: actions/checkout@v4
+      # assets.rs 用 include_dir! 内嵌 web/dist，编译期必须有该目录（git 忽略，仅由 web job 产出）
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

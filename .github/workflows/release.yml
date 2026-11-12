@@ -197,18 +197,28 @@ jobs:
         with:
           name: web-dist
           path: web/dist
-      - uses: messense/actions-rust-cross@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          target: aarch64-linux-android
-          args: --release
+          targets: aarch64-linux-android
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk@3 --locked
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b
+      - name: Build (cargo ndk)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: cargo ndk -t aarch64-linux-android build --release
       - name: Package
         run: |
           BIN=target/aarch64-linux-android/release/lycodl
-          mkdir -p dist/lycodl-android-aarch64
-          cp "$BIN" dist/lycodl-android-aarch64/
-          cp -r extension dist/lycodl-android-aarch64/
-          cp README.md dist/lycodl-android-aarch64/
-          tar -C dist -czf lycodl-android-aarch64.tar.gz lycodl-android-aarch64
+          mkdir -p dist2/lycodl-android-aarch64
+          cp "$BIN" dist2/lycodl-android-aarch64/
+          cp -r extension dist2/lycodl-android-aarch64/
+          cp README.md dist2/lycodl-android-aarch64/
+          tar -C dist2 -czf lycodl-android-aarch64.tar.gz lycodl-android-aarch64
       - uses: actions/upload-artifact@v4
         with:
           name: lycodl-android-aarch64

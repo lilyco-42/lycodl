@@ -201,7 +201,7 @@ jobs:
         with:
           targets: aarch64-linux-android
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk@3 --locked
+        run: cargo install cargo-ndk@4 --locked
       - name: Set up Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1

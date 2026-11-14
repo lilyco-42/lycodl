@@ -6,6 +6,8 @@
 'use strict';
 
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const PLATFORMS = ['bilibili', 'douyin', 'xhs', 'kuaishou', 'youtube'];
 const DEFAULT_SHARE = 'https://pan.quark.cn/s/cb7e803942d9';
@@ -13,8 +15,11 @@ const DEFAULT_PASSCODE = 'xdDX';
 const DEFAULT_QUARK_DIR = '/06_待整理/lycodl-短剧集';
 const DEFAULT_QUAKE = '/home/lilyco/.config/kuake/run.sh';
 // 6 个平台的真实提交器（CDP + 各站 DOM 流程）。可用 settings.publishPlatformCommand 覆盖。
-const DEFAULT_PUBLISHER = '/home/lilyco/.local/share/lycodl/platform-publish.mjs';
-const DEFAULT_PLATFORM_COMMAND = 'node ' + DEFAULT_PUBLISHER;
+// 优先用与本文件同目录的 platform-publish.mjs（仓库内/安装目录内都能自洽），否则回落到安装路径。
+const INSTALLED_PUBLISHER = '/home/lilyco/.local/share/lycodl/platform-publish.mjs';
+const SIBLING_PUBLISHER = fileURLToPath(new URL('./platform-publish.mjs', import.meta.url));
+const DEFAULT_PUBLISHER = existsSync(SIBLING_PUBLISHER) ? SIBLING_PUBLISHER : INSTALLED_PUBLISHER;
+const DEFAULT_PLATFORM_COMMAND = 'node ' + JSON.stringify(DEFAULT_PUBLISHER);
 
 function emit(o) { process.stdout.write(JSON.stringify(o) + '\n'); }
 

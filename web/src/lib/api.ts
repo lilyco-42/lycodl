@@ -23,6 +23,48 @@ export interface Settings {
   browserBridge: boolean;
   /** FlareSolverr 地址，null 表示不启用 */
   flaresolverrEndpoint: string | null;
+  /** 下载完成后自动发布 */
+  autoPublish: boolean;
+  /** 发布 driver 命令；空串使用内置默认 driver */
+  publishDriver: string;
+  /** 目的地：quark / bilibili / douyin / xhs / kuaishou / youtube / x */
+  publishTargets: string[];
+  publishQuarkDir: string;
+  publishShareUrl: string | null;
+  publishSharePasscode: string | null;
+  publishCdpUrl: string;
+  publishPlatformCommand: string | null;
+  /** 只演练、不真正外发 */
+  publishDryRun: boolean;
+}
+
+export interface PublishLedgerEntry {
+  file: string;
+  size: number;
+  dest: string;
+  status: string;
+  detail: string;
+  url: string | null;
+  at: number;
+  dryRun: boolean;
+}
+
+export interface PublishLedgerResponse {
+  entries: PublishLedgerEntry[];
+}
+
+export interface PublishTestResponse {
+  ok: true;
+  file: string;
+  results: PublishResult[];
+}
+
+export interface PublishResult {
+  dest: string;
+  status: string;
+  detail: string;
+  url: string | null;
+  at: number;
 }
 
 export interface SettingsResponse {
@@ -357,6 +399,17 @@ export const api = {
 
   jobLogs: (id: string) =>
     request<JobLogsResponse>("/api/jobs/" + encodeURIComponent(id) + "/logs"),
+
+  /** 最近发布记录，新的在前 */
+  publishLedger: (limit = 50) =>
+    request<PublishLedgerResponse>("/api/publish/ledger?limit=" + limit),
+
+  /** 用一个已有文件立刻试跑一次发布（会按 ledger 跳过成功过的目的地） */
+  publishTest: (file: string) =>
+    request<PublishTestResponse>("/api/publish/test", {
+      method: "POST",
+      body: JSON.stringify({ file }),
+    }),
 
   cancelJob: (id: string) =>
     request<{ ok: true }>("/api/jobs/" + encodeURIComponent(id) + "/cancel", {

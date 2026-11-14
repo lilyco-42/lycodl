@@ -42,7 +42,14 @@ pub fn chromium_path() -> Option<PathBuf> {
             return Some(PathBuf::from(p));
         }
     }
-    for name in ["chromium", "chromium-browser", "google-chrome-stable", "google-chrome", "microsoft-edge-stable", "brave-browser"] {
+    for name in [
+        "chromium",
+        "chromium-browser",
+        "google-chrome-stable",
+        "google-chrome",
+        "microsoft-edge-stable",
+        "brave-browser",
+    ] {
         if let Some(p) = which(name) {
             return Some(p);
         }
@@ -119,21 +126,30 @@ pub fn bridge(url: &str, wait_ms: u64) -> Result<BridgeOutcome, String> {
 fn run_bridge(prof: &Path, url: &str, wait_ms: u64) -> Result<BridgeOutcome, String> {
     let port = wait_devtools_port(prof, Duration::from_secs(15))?;
     let targets = http_get(&format!("http://127.0.0.1:{port}/json/list"))?;
-    let targets: Value = serde_json::from_str(&targets).map_err(|e| format!("解析调试目标失败: {e}"))?;
+    let targets: Value =
+        serde_json::from_str(&targets).map_err(|e| format!("解析调试目标失败: {e}"))?;
     let ws_url = targets
         .as_array()
-        .and_then(|a| a.iter().find(|t| t.get("type").and_then(|v| v.as_str()) == Some("page")))
+        .and_then(|a| {
+            a.iter()
+                .find(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
+        })
         .and_then(|t| t.get("webSocketDebuggerUrl").and_then(|v| v.as_str()))
         .ok_or_else(|| "浏览器没有可用的页面目标".to_string())?
         .to_string();
 
-    let (mut ws, _) = tungstenite::connect(&ws_url).map_err(|e| format!("连接浏览器调试端口失败: {e}"))?;
+    let (mut ws, _) =
+        tungstenite::connect(&ws_url).map_err(|e| format!("连接浏览器调试端口失败: {e}"))?;
     let mut rpc = Rpc::new();
     rpc.call(&mut ws, "Network.enable", json!({}))?;
     rpc.call(&mut ws, "Page.enable", json!({}))?;
     rpc.call(&mut ws, "Runtime.enable", json!({}))?;
     let ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36";
-    rpc.call(&mut ws, "Network.setUserAgentOverride", json!({ "userAgent": ua }))?;
+    rpc.call(
+        &mut ws,
+        "Network.setUserAgentOverride",
+        json!({ "userAgent": ua }),
+    )?;
     rpc.call(&mut ws, "Page.navigate", json!({ "url": url }))?;
 
     let deadline = Instant::now() + Duration::from_millis(wait_ms.max(3000));
@@ -146,14 +162,23 @@ fn run_bridge(prof: &Path, url: &str, wait_ms: u64) -> Result<BridgeOutcome, Str
     while Instant::now() < deadline {
         rpc.drain(&mut ws, &mut media);
         std::thread::sleep(Duration::from_millis(700));
-        let probe = "JSON.stringify({t:document.title,n:document.body?document.body.innerText.length:0,\
+        let probe =
+            "JSON.stringify({t:document.title,n:document.body?document.body.innerText.length:0,\
                      vv:document.querySelectorAll('video').length,\
                      v:(document.querySelector('video')||{}).currentSrc||''})";
         let probe = probe.replace("\\\n", "");
         if let Ok(v) = rpc.eval(&mut ws, &probe) {
-            title = v.get("t").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            title = v
+                .get("t")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             videos = v.get("vv").and_then(|x| x.as_i64()).unwrap_or(0);
-            src = v.get("v").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            src = v
+                .get("v")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             let blocked = is_challenge_title(&title);
             if !blocked {
                 challenge_passed = true;
@@ -175,7 +200,10 @@ fn run_bridge(prof: &Path, url: &str, wait_ms: u64) -> Result<BridgeOutcome, Str
             std::thread::sleep(Duration::from_millis(500));
         }
     }
-    if let Ok(v) = rpc.eval(&mut ws, "JSON.stringify({t:document.title,v:(document.querySelector('video')||{}).currentSrc||''})") {
+    if let Ok(v) = rpc.eval(
+        &mut ws,
+        "JSON.stringify({t:document.title,v:(document.querySelector('video')||{}).currentSrc||''})",
+    ) {
         if let Some(t) = v.get("t").and_then(|x| x.as_str()) {
             if !t.is_empty() {
                 title = t.to_string();
@@ -188,7 +216,6 @@ fn run_bridge(prof: &Path, url: &str, wait_ms: u64) -> Result<BridgeOutcome, Str
         }
     }
 
-    let mut media = media;
     if !src.is_empty() && !media.iter().any(|m| m.url == src) {
         media.insert(
             0,
@@ -251,7 +278,11 @@ fn write_netscape(cookies: &[(String, String, String, String, bool, f64)]) -> Op
     }
     let mut body = String::from("# Netscape HTTP Cookie File\n");
     for (domain, path, name, value, secure, expires) in cookies {
-        let inc = if domain.starts_with('.') { "TRUE" } else { "FALSE" };
+        let inc = if domain.starts_with('.') {
+            "TRUE"
+        } else {
+            "FALSE"
+        };
         let exp = if *expires > 0.0 { *expires as i64 } else { 0 };
         body.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
@@ -291,9 +322,7 @@ impl Rpc {
             .map_err(|e| format!("发送调试命令失败: {e}"))?;
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
-            let m = ws
-                .read()
-                .map_err(|e| format!("读取调试结果失败: {e}"))?;
+            let m = ws.read().map_err(|e| format!("读取调试结果失败: {e}"))?;
             let txt = match m {
                 tungstenite::Message::Text(t) => t.to_string(),
                 _ => continue,
@@ -317,10 +346,20 @@ impl Rpc {
         ws: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
         expr: &str,
     ) -> Result<Value, String> {
-        let r = self.call(ws, "Runtime.evaluate", json!({ "expression": expr, "returnByValue": true }))?;
-        let raw = r.get("result").and_then(|x| x.get("value")).cloned().unwrap_or(Value::Null);
+        let r = self.call(
+            ws,
+            "Runtime.evaluate",
+            json!({ "expression": expr, "returnByValue": true }),
+        )?;
+        let raw = r
+            .get("result")
+            .and_then(|x| x.get("value"))
+            .cloned()
+            .unwrap_or(Value::Null);
         match raw {
-            Value::String(s) => serde_json::from_str(&s).map_err(|e| format!("解析页面状态失败: {e}")),
+            Value::String(s) => {
+                serde_json::from_str(&s).map_err(|e| format!("解析页面状态失败: {e}"))
+            }
             v => Ok(v),
         }
     }
@@ -336,7 +375,9 @@ impl Rpc {
             match ws.read() {
                 Ok(tungstenite::Message::Text(t)) => {
                     if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                        if v.get("method").and_then(|m| m.as_str()) == Some("Network.responseReceived") {
+                        if v.get("method").and_then(|m| m.as_str())
+                            == Some("Network.responseReceived")
+                        {
                             if let Some(resp) = v.get("params").and_then(|p| p.get("response")) {
                                 if let Some(hit) = media_from_response(resp) {
                                     if !media.iter().any(|m| m.url == hit.url) {
@@ -360,15 +401,31 @@ impl Rpc {
         ws: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
     ) -> Result<Vec<(String, String, String, String, bool, f64)>, String> {
         let r = self.call(ws, "Network.getAllCookies", json!({}))?;
-        let arr = r.get("cookies").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+        let arr = r
+            .get("cookies")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
         Ok(arr
             .iter()
             .map(|c| {
                 (
-                    c.get("domain").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                    c.get("path").and_then(|x| x.as_str()).unwrap_or("/").to_string(),
-                    c.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                    c.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    c.get("domain")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    c.get("path")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("/")
+                        .to_string(),
+                    c.get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    c.get("value")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     c.get("secure").and_then(|x| x.as_bool()).unwrap_or(false),
                     c.get("expires").and_then(|x| x.as_f64()).unwrap_or(0.0),
                 )
@@ -377,7 +434,10 @@ impl Rpc {
     }
 }
 
-fn set_timeout(s: &mut tungstenite::stream::MaybeTlsStream<std::net::TcpStream>, d: Option<Duration>) {
+fn set_timeout(
+    s: &mut tungstenite::stream::MaybeTlsStream<std::net::TcpStream>,
+    d: Option<Duration>,
+) {
     if let tungstenite::stream::MaybeTlsStream::Plain(t) = s {
         let _ = t.set_read_timeout(d);
     }
@@ -385,7 +445,11 @@ fn set_timeout(s: &mut tungstenite::stream::MaybeTlsStream<std::net::TcpStream>,
 
 fn media_from_response(resp: &Value) -> Option<MediaHit> {
     let url = resp.get("url").and_then(|u| u.as_str())?.to_string();
-    let mime = resp.get("mimeType").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let mime = resp
+        .get("mimeType")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
     let looks = mime.starts_with("video/")
         || mime.contains("mpegurl")
         || mime.contains("dash+xml")
@@ -413,10 +477,7 @@ fn media_from_response(resp: &Value) -> Option<MediaHit> {
 ///
 /// 排序依据（依次比较）：不是广告/预览小文件 > 体积大 > 是流清单(m3u8/mpd) > 出现得晚
 pub fn pick_media(hits: &[MediaHit]) -> Option<MediaHit> {
-    let mut cands: Vec<&MediaHit> = hits
-        .iter()
-        .filter(|h| !is_junk_media(&h.url))
-        .collect();
+    let mut cands: Vec<&MediaHit> = hits.iter().filter(|h| !is_junk_media(&h.url)).collect();
     if cands.is_empty() {
         return None;
     }
@@ -431,9 +492,7 @@ pub fn pick_media(hits: &[MediaHit]) -> Option<MediaHit> {
 fn stream_score(h: &MediaHit) -> u8 {
     if h.url.contains(".m3u8") || h.mime.contains("mpegurl") {
         3
-    } else if h.url.contains(".mpd") || h.mime.contains("dash+xml") {
-        2
-    } else if h.size > 300_000 {
+    } else if h.url.contains(".mpd") || h.mime.contains("dash+xml") || h.size > 300_000 {
         2
     } else {
         1
@@ -489,7 +548,8 @@ pub fn flaresolverr_media(endpoint: &str, url: &str) -> Result<FlarePage, String
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("FlareSolverr 返回的不是 JSON: {e}"))?;
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("FlareSolverr 返回的不是 JSON: {e}"))?;
     let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
     if status != "ok" {
         return Err(format!(
@@ -507,7 +567,11 @@ pub fn flaresolverr_media(endpoint: &str, url: &str) -> Result<FlarePage, String
     // 只按字典序 / 体积挑会挑到别人的片（pexels 实测挑中过 aigc-bundle 装饰视频）。
     if let Some(u) = declared_video_url(html) {
         return Ok(FlarePage {
-            hit: MediaHit { mime: mime_for(&u), size: 0, url: u },
+            hit: MediaHit {
+                mime: mime_for(&u),
+                size: 0,
+                url: u,
+            },
             title: page_title,
         });
     }
@@ -571,7 +635,7 @@ fn find_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
         }
         let mut ok = true;
         for j in 1..needle.len() {
-            if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
+            if !hay[i + j].eq_ignore_ascii_case(&needle[j]) {
                 ok = false;
                 break;
             }
@@ -702,7 +766,9 @@ fn attr_value(tag: &str, name: &str) -> Option<String> {
     let quote = after[q];
     let value = &after[q + 1..];
     let end = value.iter().position(|c| *c == quote)?;
-    std::str::from_utf8(&value[..end]).ok().map(|s| s.to_string())
+    std::str::from_utf8(&value[..end])
+        .ok()
+        .map(|s| s.to_string())
 }
 
 fn looks_like_media(u: &str) -> bool {
@@ -710,9 +776,11 @@ fn looks_like_media(u: &str) -> bool {
         return false;
     }
     let low = u.to_ascii_lowercase();
-    [".mp4", ".m3u8", ".mpd", ".webm", ".mkv", ".flv", ".m4a", ".mp3"]
-        .iter()
-        .any(|e| low.contains(e))
+    [
+        ".mp4", ".m3u8", ".mpd", ".webm", ".mkv", ".flv", ".m4a", ".mp3",
+    ]
+    .iter()
+    .any(|e| low.contains(e))
 }
 
 fn mime_for(url: &str) -> String {
@@ -746,7 +814,10 @@ fn find_urls(html: &str, ext: &str) -> Vec<String> {
             let mut start = i;
             while start > 0 {
                 let c = bytes[start - 1];
-                if matches!(c, b'"' | b'\'' | b'(' | b' ' | b'\n' | b'\t' | b'<' | b'>' | b'=' | b',') {
+                if matches!(
+                    c,
+                    b'"' | b'\'' | b'(' | b' ' | b'\n' | b'\t' | b'<' | b'>' | b'=' | b','
+                ) {
                     break;
                 }
                 start -= 1;
@@ -776,7 +847,10 @@ fn http_get(url: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("请求调试端口失败: {e}"))?;
     if !out.status.success() {
-        return Err(format!("请求调试端口失败: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!(
+            "请求调试端口失败: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }

@@ -4,3 +4,5 @@ web/dist
 *.log
 /dist
 /dist2
+__pycache__/
+*.pyc

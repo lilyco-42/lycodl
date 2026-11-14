@@ -1,0 +1,17 @@
+[Unit]
+Description=lycodl 视频下载器 Web 控制台
+After=network-online.target lycodl-cdp.service
+Wants=network-online.target
+Requires=lycodl-cdp.service
+
+[Service]
+Type=simple
+Environment=LYCODL_NO_OPEN=1
+Environment=LYCODL_PORT=8766
+ExecStart=%h/.local/bin/lycodl --web
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

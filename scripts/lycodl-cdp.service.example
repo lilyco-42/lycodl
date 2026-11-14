@@ -1,0 +1,14 @@
+[Unit]
+Description=lycodl CDP Chrome (9333, internal)
+PartOf=lycodl.service
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Chrome 136+ refuses --remote-debugging-port on the default user data dir.
+# Merge fresh desktop Chrome login cookies into this dedicated non-default profile before every start.
+# The user systemd manager supplies HOME=/home/lilyco; override LYCODL_MAIN_CHROME_DIR,
+# LYCODL_CDP_CHROME_DIR, and LYCODL_CHROME_PROFILE only for a non-default layout.
+ExecStartPre=-/usr/bin/python3 %h/.local/share/lycodl/sync-chrome-cookies.py
+ExecStart=/opt/google/chrome/chrome --no-sandbox --disable-gpu --disable-dev-shm-usage --headless=new --remote-debugging-port=9333 --remote-allow-origins=* --user-data-dir=%h/.cache/lycodl-cdp-profile --profile-directory=Default --window-size=1440,960 --lang=zh-CN --no-first-run --no-default-browser-check about:blank
+Restart=no

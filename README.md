@@ -69,6 +69,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now lycodl.service
 ```
 
+> 本机 Chrome CDP / 发布登录态的部署与排障见 [docs/cdp.md](docs/cdp.md)。
+
 ## 命令
 
 | 命令 | 分级 | 说明 |

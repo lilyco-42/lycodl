@@ -142,6 +142,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs/{id}/retry", post(retry_job))
         .route("/api/jobs/{id}/logs", get(job_logs))
         .route("/api/publish/ledger", get(publish_ledger))
+        .route("/api/publish/capabilities", post(publish_capabilities))
         .route("/api/publish/test", post(publish_test))
         .route("/api/publish/local", post(publish_local))
         .route("/api/publish/upload", post(publish_upload))
@@ -530,6 +531,77 @@ fn query_bool(q: &HashMap<String, String>, key: &str) -> Option<bool> {
     })
 }
 
+/// 发布前只读筛选：返回每个目的地的可用性、账号已发布状态与可发布列表。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishCapabilitiesReq {
+    file: String,
+    #[serde(default)]
+    targets: Vec<String>,
+    #[serde(default)]
+    force: bool,
+}
+
+async fn publish_capabilities(
+    State(st): State<AppState>,
+    Json(req): Json<PublishCapabilitiesReq>,
+) -> Result<Json<Value>, ApiError> {
+    let file = req.file.trim().to_string();
+    if file.is_empty() {
+        return Err(ApiError::bad("缺少 file 参数"));
+    }
+    let s = st.snapshot();
+    let p = crate::publish_caps::probe(&file, req.targets, &s)
+        .await
+        .map_err(ApiError::bad)?;
+    let mut v = p.as_value(req.force);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("ok".into(), json!(true));
+    }
+    Ok(Json(v))
+}
+
+/// 一键发布的服务端筛选：绝不相信前端传来的「筛选结果」，提交时重新只读预检。
+async fn filtered_publish_plan(
+    file: &str,
+    targets: Vec<String>,
+    force: bool,
+    s: &Settings,
+) -> Result<(Vec<String>, Vec<String>, Value), ApiError> {
+    let wanted = if targets.is_empty() {
+        s.publish_targets.clone()
+    } else {
+        targets
+    };
+    let p = crate::publish_caps::probe(file, wanted, s)
+        .await
+        .map_err(ApiError::bad)?;
+    let selectable = p.selectable(force);
+    if selectable.is_empty() {
+        let why = p
+            .caps
+            .iter()
+            .map(|c| {
+                format!(
+                    "{}={}",
+                    c.dest,
+                    if !c.available { "不可用" } else { "已发布" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("、");
+        let tail = if p.errors.is_empty() {
+            String::new()
+        } else {
+            format!("；{}", p.errors.join("；"))
+        };
+        return Err(ApiError::bad(format!(
+            "筛选后没有可发布的目的地（{why}）{tail}"
+        )));
+    }
+    Ok((selectable, p.log_lines(force), p.as_value(force)))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PublishLocalReq {
@@ -542,6 +614,9 @@ struct PublishLocalReq {
     dry_run: Option<bool>,
     #[serde(default)]
     force: bool,
+    /// true = 一键发布：服务端重新筛选不可用 / 已发布目的地
+    #[serde(default)]
+    filter: bool,
 }
 
 /// 对已存在的本机路径建一个手动发布任务；不复制、不上传文件本身。
@@ -555,19 +630,33 @@ async fn publish_local(
     }
     let s = st.snapshot();
     let dry_run = req.dry_run.unwrap_or(s.publish_dry_run);
+    let (targets, notes, filter_value) = if req.filter {
+        let (t, n, v) = filtered_publish_plan(&file, req.targets, req.force, &s).await?;
+        (t, n, Some(v))
+    } else {
+        (req.targets, Vec::new(), None)
+    };
+    let source = if req.filter { "one-click" } else { "local" };
     let job_id = st
         .store
         .spawn_local_publish(NewPublishJob {
             file: file.clone(),
             title: req.title,
-            targets: req.targets,
+            targets,
             dry_run,
             force: req.force,
-            source: "local".into(),
+            filter: req.filter,
+            filter_notes: notes,
+            source: source.into(),
             settings: s,
         })
         .map_err(ApiError::bad)?;
-    Ok(Json(json!({ "ok": true, "jobId": job_id, "file": file })))
+    Ok(Json(json!({
+        "ok": true,
+        "jobId": job_id,
+        "file": file,
+        "filter": filter_value,
+    })))
 }
 
 fn safe_upload_name(raw: &str) -> Result<String, String> {
@@ -672,16 +761,31 @@ async fn publish_upload(
     let targets = query_targets(&q).unwrap_or_else(Vec::new);
     let dry_run = query_bool(&q, "dryRun").unwrap_or(s.publish_dry_run);
     let force = query_bool(&q, "force").unwrap_or(false);
+    let filter = query_bool(&q, "filter").unwrap_or(false);
     let title = q.get("title").cloned().unwrap_or_default();
+    let (final_targets, notes, filter_value) = if filter {
+        match filtered_publish_plan(&path, targets, force, &s).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_file(&dest);
+                return Err(e);
+            }
+        }
+    } else {
+        (targets, Vec::new(), Value::Null)
+    };
+    let source = if filter { "one-click" } else { "upload" };
     let job_id = st
         .store
         .spawn_local_publish(NewPublishJob {
             file: path.clone(),
             title,
-            targets,
+            targets: final_targets,
             dry_run,
             force,
-            source: "upload".into(),
+            filter,
+            filter_notes: notes,
+            source: source.into(),
             settings: s,
         })
         .map_err(|e| {
@@ -693,6 +797,7 @@ async fn publish_upload(
         "jobId": job_id,
         "file": path,
         "size": written,
+        "filter": filter_value,
     })))
 }
 

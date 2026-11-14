@@ -71,12 +71,37 @@ export interface PublishResult {
   at: number;
 }
 
+/** 发布前只读预检：可用接口 / 登录态 / 我的账号已发布状态 */
+export interface PublishCapability {
+  dest: string;
+  available: boolean;
+  published: boolean;
+  reason: string;
+  detail: string;
+  source: string;
+}
+
+export interface PublishProbeResponse {
+  ok: true;
+  file: string;
+  size: number;
+  targets: string[];
+  selectable: string[];
+  skipped: PublishCapability[];
+  caps: PublishCapability[];
+  errors: string[];
+  checkedAt: number;
+  force: boolean;
+}
+
 /** 本机文件手动发布表单的选项；也用于扩展测试发布接口 */
 export interface PublishSubmission {
   title?: string;
   targets: string[];
   dryRun: boolean;
   force: boolean;
+  /** 一键发布：提交时由服务端重新筛选不可用 / 已发布目的地 */
+  filter?: boolean;
 }
 
 export interface PublishTaskResponse {
@@ -84,6 +109,7 @@ export interface PublishTaskResponse {
   jobId: string;
   file: string;
   size?: number;
+  filter?: PublishProbeResponse | null;
 }
 
 export interface SettingsResponse {
@@ -427,6 +453,17 @@ export const api = {
   publishLedger: (limit = 50) =>
     request<PublishLedgerResponse>("/api/publish/ledger?limit=" + limit),
 
+  /** 只读筛选：不上传、不发帖、不创建平台作品 */
+  publishCapabilities: (payload: {
+    file: string;
+    targets?: string[];
+    force?: boolean;
+  }) =>
+    request<PublishProbeResponse>("/api/publish/capabilities", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   /** 用一个已有文件立刻试跑一次发布（会按 ledger 跳过成功过的目的地） */
   publishTest: (file: string, options: Partial<PublishSubmission> = {}) =>
     request<PublishTestResponse>("/api/publish/test", {
@@ -453,6 +490,7 @@ export const api = {
         targets: options.targets.join(","),
         dryRun: String(options.dryRun),
         force: String(options.force),
+        filter: String(options.filter === true),
       });
       const title = (options.title ?? "").trim();
       if (title !== "") params.set("title", title);

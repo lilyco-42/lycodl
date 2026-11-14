@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, FolderOpen, LoaderCircle, RefreshCw, Send } from "lucide-react";
+import { Download, FolderOpen, LoaderCircle, RefreshCw, Send, WandSparkles } from "lucide-react";
 import { toast } from "sonner";
 import { api, errorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -20,12 +20,19 @@ import { useSettings } from "@/hooks/useSettings";
 import { formatBytes, formatDateTime } from "@/lib/format";
 
 /** 输出目录文件列表。 */
-export function FilesPanel({ onPublish }: { onPublish?: (path: string) => void }) {
+export function FilesPanel({
+  onPublish,
+  onTaskCreated,
+}: {
+  onPublish?: (path: string) => void;
+  onTaskCreated?: () => void;
+}) {
   const { files, loading, error, refresh } = useFiles();
   // 文件接口只给名字，定位到文件需要输出目录，所以顺带读一次设置
   const { settings } = useSettings();
   const [refreshing, setRefreshing] = useState(false);
   const [revealing, setRevealing] = useState<string | null>(null);
+  const [oneClicking, setOneClicking] = useState<string | null>(null);
 
   async function handleReveal(name: string) {
     const dir = settings?.outputDir ?? "";
@@ -47,14 +54,47 @@ export function FilesPanel({ onPublish }: { onPublish?: (path: string) => void }
     }
   }
 
-  function handlePublish(name: string) {
+  function fullPath(name: string): string {
     const dir = settings?.outputDir ?? "";
-    if (dir === "") {
+    const base = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+    return base + "/" + name;
+  }
+
+  function handlePublish(name: string) {
+    if ((settings?.outputDir ?? "") === "") {
       toast.error("还没读到输出目录，请稍后再试");
       return;
     }
-    const base = dir.endsWith("/") ? dir.slice(0, -1) : dir;
-    onPublish?.(base + "/" + name);
+    onPublish?.(fullPath(name));
+  }
+
+  /** 文件行的一键发布：直接走服务端只读筛选，自动跳过不可用 / 已发布目的地。 */
+  async function handleOneClick(name: string) {
+    if ((settings?.outputDir ?? "") === "") {
+      toast.error("还没读到输出目录，请稍后再试");
+      return;
+    }
+    setOneClicking(name);
+    try {
+      const result = await api.publishLocal({
+        file: fullPath(name),
+        targets: settings?.publishTargets ?? [],
+        // 设置还没读到时保守地只演练，避免误真发
+        dryRun: settings?.publishDryRun ?? true,
+        force: false,
+        filter: true,
+      });
+      const count = result.filter?.selectable.length ?? 0;
+      toast.success("一键发布任务已创建", {
+        description: "任务 ID：" + result.jobId + "；" + count + " 个目的地" +
+          ((settings?.publishDryRun ?? true) ? "（演练，不会外发）" : ""),
+      });
+      onTaskCreated?.();
+    } catch (cause: unknown) {
+      toast.error("一键发布失败", { description: errorMessage(cause) });
+    } finally {
+      setOneClicking(null);
+    }
   }
 
   async function handleRefresh() {
@@ -107,7 +147,7 @@ export function FilesPanel({ onPublish }: { onPublish?: (path: string) => void }
                 <TableHead className="min-w-0">名称</TableHead>
                 <TableHead className="w-28 text-right">大小</TableHead>
                 <TableHead className="w-44">修改时间</TableHead>
-                <TableHead className="w-52 text-right">操作</TableHead>
+                <TableHead className="w-72 text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -122,6 +162,16 @@ export function FilesPanel({ onPublish }: { onPublish?: (path: string) => void }
                   <TableCell className="text-muted-foreground">{formatDateTime(file.modified)}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1.5">
+                      <Button
+                        id={"one-click-publish-" + file.name}
+                        size="xs"
+                        onClick={() => void handleOneClick(file.name)}
+                        disabled={oneClicking === file.name}
+                        title="只读筛选后自动发布到可用且未发布的目的地"
+                      >
+                        {oneClicking === file.name ? <LoaderCircle className="animate-spin" /> : <WandSparkles />}
+                        一键发布
+                      </Button>
                       <Button
                         variant="outline"
                         size="xs"

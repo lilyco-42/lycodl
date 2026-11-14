@@ -130,7 +130,11 @@ pub struct NewPublishJob {
     pub targets: Vec<String>,
     pub dry_run: bool,
     pub force: bool,
-    /// local / upload，写进 ledger 便于追溯来源
+    /// 一键发布：targets 已经是筛选结果，空列表不可回落成「全量」
+    pub filter: bool,
+    /// 筛选结论，创建任务时立即写进任务日志
+    pub filter_notes: Vec<String>,
+    /// local / upload / one-click，写进 ledger 便于追溯来源
     pub source: String,
     pub settings: crate::settings::Settings,
 }
@@ -299,7 +303,7 @@ impl JobStore {
             .unwrap_or_default()
     }
 
-    fn push_log(&self, id: &str, line: String) {
+    pub fn push_log(&self, id: &str, line: String) {
         if let Ok(mut m) = self.logs.lock() {
             let e = m.entry(id.to_string()).or_default();
             e.push(line);
@@ -637,11 +641,14 @@ impl JobStore {
         } else {
             req.title.trim().to_string()
         };
+        if req.filter && req.targets.is_empty() {
+            return Err("筛选后没有可发布的目的地，未创建发布任务".into());
+        }
         let targets = crate::publish::normalize_targets(req.targets);
-        let source = if req.source == "upload" {
-            "upload".to_string()
-        } else {
-            "local".to_string()
+        let source = match req.source.as_str() {
+            "upload" => "upload".to_string(),
+            "one-click" => "one-click".to_string(),
+            _ => "local".to_string(),
         };
 
         let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
@@ -682,6 +689,11 @@ impl JobStore {
             m.insert(id.clone(), flag.clone());
         }
         self.broadcast(&id);
+        if req.filter {
+            for line in &req.filter_notes {
+                self.push_log(&id, line.clone());
+            }
+        }
 
         let store = self.clone();
         let jid = id.clone();

@@ -85,6 +85,7 @@ function App() {
                 setPublishToken((token) => token + 1);
                 setTab("publish");
               }}
+              onTaskCreated={() => setTab("jobs")}
             />
           </TabsContent>
           <TabsContent value="publish">

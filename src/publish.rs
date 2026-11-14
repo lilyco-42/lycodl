@@ -159,7 +159,6 @@ fn already_ok(file: &str, size: u64) -> Vec<String> {
 }
 
 /// 只读查询：这个文件已经成功发布到哪些目的地
-#[allow(dead_code)]
 pub fn published_dests(file: &str, size: u64) -> Vec<String> {
     already_ok(file, size)
 }

@@ -20,6 +20,7 @@ mod paths;
 mod plugin;
 mod policy;
 mod publish;
+mod publish_caps;
 mod settings;
 mod sites;
 mod ytdlp;

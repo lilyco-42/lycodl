@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
+import { Download, FolderOpen, LoaderCircle, RefreshCw, Send } from "lucide-react";
 import { toast } from "sonner";
 import { api, errorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { formatBytes, formatDateTime } from "@/lib/format";
 
 /** 输出目录文件列表。 */
-export function FilesPanel() {
+export function FilesPanel({ onPublish }: { onPublish?: (path: string) => void }) {
   const { files, loading, error, refresh } = useFiles();
   // 文件接口只给名字，定位到文件需要输出目录，所以顺带读一次设置
   const { settings } = useSettings();
@@ -45,6 +45,16 @@ export function FilesPanel() {
     } finally {
       setRevealing(null);
     }
+  }
+
+  function handlePublish(name: string) {
+    const dir = settings?.outputDir ?? "";
+    if (dir === "") {
+      toast.error("还没读到输出目录，请稍后再试");
+      return;
+    }
+    const base = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+    onPublish?.(base + "/" + name);
   }
 
   async function handleRefresh() {
@@ -97,7 +107,7 @@ export function FilesPanel() {
                 <TableHead className="min-w-0">名称</TableHead>
                 <TableHead className="w-28 text-right">大小</TableHead>
                 <TableHead className="w-44">修改时间</TableHead>
-                <TableHead className="w-40 text-right">操作</TableHead>
+                <TableHead className="w-52 text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -112,6 +122,14 @@ export function FilesPanel() {
                   <TableCell className="text-muted-foreground">{formatDateTime(file.modified)}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1.5">
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => handlePublish(file.name)}
+                      >
+                        <Send />
+                        发布
+                      </Button>
                       <Button
                         variant="ghost"
                         size="xs"

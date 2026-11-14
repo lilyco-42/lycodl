@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Bot, Download, FolderOpen, Globe, ListVideo, Settings2, Zap } from "lucide-react";
+import { Bot, Download, FolderOpen, Globe, ListVideo, Settings2, UploadCloud, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
 import { DownloadPanel } from "@/components/download-panel";
 import { JobsPanel } from "@/components/jobs-panel";
 import { FilesPanel } from "@/components/files-panel";
+import { PublishPanel } from "@/components/publish-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { CommandsPanel } from "@/components/commands-panel";
 import { PlatformsPanel } from "@/components/platforms-panel";
@@ -15,6 +16,7 @@ const TABS = [
   { value: "download", label: "下载", icon: Download },
   { value: "jobs", label: "任务", icon: ListVideo },
   { value: "files", label: "文件", icon: FolderOpen },
+  { value: "publish", label: "发布", icon: UploadCloud },
   { value: "settings", label: "设置", icon: Settings2 },
   { value: "platforms", label: "平台", icon: Globe },
   { value: "commands", label: "命令（AI）", icon: Bot },
@@ -24,6 +26,9 @@ function App() {
   const [tab, setTab] = useState<string>("download");
   /** 平台页点示例链接后回填给下载页；置空再设值可让同一个链接重复触发 */
   const [exampleUrl, setExampleUrl] = useState<string>("");
+  /** 文件页点「发布」时预填本机路径；token 递增保证同一路径可重复触发 */
+  const [publishPath, setPublishPath] = useState<string>("");
+  const [publishToken, setPublishToken] = useState(0);
   const { health } = useHealth();
 
   function handleUseExample(url: string) {
@@ -46,7 +51,7 @@ function App() {
             </span>
             <div className="leading-tight">
               <h1 className="text-lg font-semibold tracking-tight">lycodl</h1>
-              <p className="text-xs text-muted-foreground">视频下载器 · 由 yt-dlp 内核驱动</p>
+              <p className="text-xs text-muted-foreground">视频下载 · 本机发布 · 由 yt-dlp 内核驱动</p>
             </div>
           </div>
           <Badge variant="outline" className="h-6 gap-1.5 px-2.5 font-mono text-xs">
@@ -74,7 +79,20 @@ function App() {
             <JobsPanel />
           </TabsContent>
           <TabsContent value="files">
-            <FilesPanel />
+            <FilesPanel
+              onPublish={(path) => {
+                setPublishPath(path);
+                setPublishToken((token) => token + 1);
+                setTab("publish");
+              }}
+            />
+          </TabsContent>
+          <TabsContent value="publish">
+            <PublishPanel
+              prefillPath={publishPath !== "" ? publishPath : undefined}
+              prefillToken={publishToken}
+              onTaskCreated={() => setTab("jobs")}
+            />
           </TabsContent>
           <TabsContent value="settings">
             <SettingsPanel />

@@ -28,6 +28,7 @@ import { JobLogsButton } from "@/components/job-logs-dialog";
 import { api } from "@/lib/api";
 import type { Job, JobStatus } from "@/lib/api";
 import { errorMessage } from "@/lib/api";
+import { PUBLISH_LABELS, publishStatusMeta } from "@/lib/publish";
 import { clampPercent, formatBytes, formatDateTime, formatEta, formatSpeed } from "@/lib/format";
 import { copyText } from "@/lib/clipboard";
 import { useJobs } from "@/hooks/useJobs";
@@ -47,6 +48,7 @@ const MODE_LABEL: Record<string, string> = {
   video: "视频",
   audio: "音频",
   custom: "自定义格式",
+  publish: "文件发布",
 };
 
 function isActive(job: Job): boolean {
@@ -170,8 +172,8 @@ export function JobsPanel() {
       {!loading && jobs.length === 0 ? (
         <EmptyState
           icon={Inbox}
-          title="还没有下载任务"
-          description="回到「下载」页签粘贴一个链接，解析后点击开始下载，任务会出现在这里。"
+          title="还没有任务"
+          description="可以从「下载」页创建下载任务，或在「发布」页提交本机视频；任务会出现在这里。"
         />
       ) : null}
 
@@ -206,6 +208,20 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
   const StatusIcon = meta.icon;
   const percent = clampPercent(job.percent);
   const active = isActive(job);
+  const publishJob = job.jobKind === "publish";
+  const statusLabel = publishJob
+    ? job.status === "queued"
+      ? "等待发布"
+      : job.status === "running"
+        ? "发布中"
+        : job.status === "done"
+          ? "发布完成"
+          : job.status === "failed"
+            ? "发布失败"
+            : meta.label
+    : meta.label;
+  const resultCount = job.publishResults?.length ?? 0;
+  const targetCount = Math.max(1, job.publishTargets?.length ?? 0);
 
   return (
     <Card>
@@ -214,7 +230,7 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
           <span className="min-w-0 flex-1 truncate">{job.title !== "" ? job.title : job.url}</span>
           <Badge variant={meta.variant} className="shrink-0">
             <StatusIcon className={job.status === "running" ? "animate-spin" : undefined} />
-            {meta.label}
+            {statusLabel}
           </Badge>
         </CardTitle>
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -236,21 +252,62 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
         <div className="space-y-1.5">
           <Progress value={percent} className="h-1.5" />
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1">
-              <Gauge className="size-3" />
-              {formatSpeed(job.speed)}
-            </span>
-            <span>
-              {formatBytes(job.downloadedBytes)}
-              {job.totalBytes !== null ? " / " + formatBytes(job.totalBytes) : ""}
-            </span>
-            <span>剩余 {formatEta(job.eta)}</span>
-            <span className="font-medium text-foreground">{percent.toFixed(1)}%</span>
+            {publishJob ? (
+              <>
+                <span className="inline-flex items-center gap-1">
+                  <Files className="size-3" />
+                  文件发布任务
+                </span>
+                <span>{resultCount} / {targetCount} 个目的地</span>
+                <span>已记录结果 {resultCount} 条</span>
+                <span className="font-medium text-foreground">{percent.toFixed(1)}%</span>
+              </>
+            ) : (
+              <>
+                <span className="inline-flex items-center gap-1">
+                  <Gauge className="size-3" />
+                  {formatSpeed(job.speed)}
+                </span>
+                <span>
+                  {formatBytes(job.downloadedBytes)}
+                  {job.totalBytes !== null ? " / " + formatBytes(job.totalBytes) : ""}
+                </span>
+                <span>剩余 {formatEta(job.eta)}</span>
+                <span className="font-medium text-foreground">{percent.toFixed(1)}%</span>
+              </>
+            )}
           </div>
         </div>
 
         {job.error !== null && job.error !== "" ? (
           <ErrorAlert title="任务出错" message={job.error} />
+        ) : null}
+
+        {publishJob && resultCount > 0 ? (
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {(job.publishResults ?? []).map((r, index) => {
+              const resultMeta = publishStatusMeta(r.status);
+              return (
+                <div key={r.dest + "-" + r.at + "-" + index} className="rounded-lg border border-border px-2.5 py-1.5 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={resultMeta.variant}>
+                      {PUBLISH_LABELS[r.dest] ?? r.dest} · {resultMeta.label}
+                    </Badge>
+                    {r.url !== null && r.url !== "" ? (
+                      <a className="text-primary underline underline-offset-2" href={r.url ?? ""} target="_blank" rel="noreferrer">
+                        打开链接
+                      </a>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 break-all text-muted-foreground">{r.detail}</p>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {publishJob && active ? (
+          <p className="text-xs text-muted-foreground">发布任务开始后不支持中途取消；每个目的地的结果会实时出现在这里并写入任务日志。</p>
         ) : null}
 
         {job.warnings.length > 0 ? (
@@ -281,13 +338,13 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
         <Separator />
         <div className="flex flex-wrap items-center justify-end gap-2">
           <JobLogsButton jobId={job.id} />
-          {job.status === "failed" || job.status === "cancelled" ? (
+          {!publishJob && (job.status === "failed" || job.status === "cancelled") ? (
             <Button variant="outline" size="sm" onClick={onRetry} disabled={retrying}>
               {retrying ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}
               {retrying ? "重试中…" : "重试"}
             </Button>
           ) : null}
-          {active ? (
+          {active && !publishJob ? (
             <Button variant="destructive" size="sm" onClick={onCancel} disabled={cancelling}>
               {cancelling ? <LoaderCircle className="animate-spin" /> : <Ban />}
               {cancelling ? "取消中…" : "取消"}

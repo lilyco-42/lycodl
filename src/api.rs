@@ -8,16 +8,20 @@ use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::UNIX_EPOCH;
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode, Uri};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::StreamExt;
+use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 
-use crate::jobs::{Job, JobStore, NewJob};
+use crate::jobs::{Job, JobStore, NewJob, NewPublishJob};
 use crate::settings::{self, Settings};
 use crate::ytdlp;
 
@@ -139,6 +143,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs/{id}/logs", get(job_logs))
         .route("/api/publish/ledger", get(publish_ledger))
         .route("/api/publish/test", post(publish_test))
+        .route("/api/publish/local", post(publish_local))
+        .route("/api/publish/upload", post(publish_upload))
         .route("/api/files", get(list_files))
         .route("/api/reveal", post(reveal))
         .route("/api/files/{name}", get(serve_file))
@@ -499,7 +505,198 @@ async fn publish_ledger(Query(q): Query<HashMap<String, String>>) -> Json<Value>
     Json(json!({ "entries": crate::publish::ledger_recent(limit) }))
 }
 
-/// 手动试跑一次发布（设置页「测试发布」按钮）：只发配置里的目的地，不碰 ledger 之外的逻辑
+fn json_targets(v: Option<&Value>) -> Option<Vec<String>> {
+    v.and_then(|x| x.as_array()).map(|a| {
+        a.iter()
+            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+            .collect()
+    })
+}
+
+fn query_targets(q: &HashMap<String, String>) -> Option<Vec<String>> {
+    q.get("targets").map(|raw| {
+        raw.split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    })
+}
+
+fn query_bool(q: &HashMap<String, String>, key: &str) -> Option<bool> {
+    q.get(key).and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishLocalReq {
+    file: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    targets: Vec<String>,
+    #[serde(default)]
+    dry_run: Option<bool>,
+    #[serde(default)]
+    force: bool,
+}
+
+/// 对已存在的本机路径建一个手动发布任务；不复制、不上传文件本身。
+async fn publish_local(
+    State(st): State<AppState>,
+    Json(req): Json<PublishLocalReq>,
+) -> Result<Json<Value>, ApiError> {
+    let file = req.file.trim().to_string();
+    if file.is_empty() {
+        return Err(ApiError::bad("缺少 file 参数"));
+    }
+    let s = st.snapshot();
+    let dry_run = req.dry_run.unwrap_or(s.publish_dry_run);
+    let job_id = st
+        .store
+        .spawn_local_publish(NewPublishJob {
+            file: file.clone(),
+            title: req.title,
+            targets: req.targets,
+            dry_run,
+            force: req.force,
+            source: "local".into(),
+            settings: s,
+        })
+        .map_err(ApiError::bad)?;
+    Ok(Json(json!({ "ok": true, "jobId": job_id, "file": file })))
+}
+
+fn safe_upload_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("文件名不能为空".into());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("文件名非法：不能包含路径或 ..".into());
+    }
+    if name.starts_with('.') {
+        return Err("文件名非法：不能以 . 开头".into());
+    }
+    let lower = name.to_ascii_lowercase();
+    if [".part", ".ytdl", ".temp"].iter().any(|x| lower.ends_with(x)) {
+        return Err("临时文件不能发布".into());
+    }
+    let clean = StdPath::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if clean.is_empty() || clean.len() > 240 {
+        return Err("文件名长度或格式无效".into());
+    }
+    Ok(clean)
+}
+
+fn upload_destination(dir: &StdPath, name: &str) -> PathBuf {
+    let mut candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let stem = StdPath::new(name)
+        .file_stem()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "video".into());
+    let ext = StdPath::new(name)
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for i in 1..1000 {
+        candidate = dir.join(format!("{stem}-{}-{i}{ext}", now_ms()));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{stem}-{}{ext}", now_ms()))
+}
+
+/// 浏览器文件选择器拿不到本机绝对路径，因此提供 raw body 流式上传到输出目录。
+/// 临时文件用隐藏 .part，写完后 rename；全程不把整个视频读进内存。
+async fn publish_upload(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    body: Body,
+) -> Result<Json<Value>, ApiError> {
+    let name = safe_upload_name(q.get("name").map(|s| s.as_str()).unwrap_or(""))
+        .map_err(ApiError::bad)?;
+    let s = st.snapshot();
+    let dir = settings::ensure_output_dir(&s).map_err(ApiError::bad)?;
+    let temp = dir.join(format!(".lycodl-upload-{}-{}.part", now_ms(), std::process::id()));
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .await
+        .map_err(|e| ApiError::internal(format!("创建上传临时文件失败: {e}")))?;
+    let mut stream = body.into_data_stream();
+    let mut written: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let bytes = match chunk {
+            Ok(b) => b,
+            Err(e) => {
+                drop(file);
+                let _ = tokio::fs::remove_file(&temp).await;
+                return Err(ApiError::bad(format!("读取上传内容失败: {e}")));
+            }
+        };
+        written += bytes.len() as u64;
+        if let Err(e) = file.write_all(&bytes).await {
+            drop(file);
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(ApiError::internal(format!("写入上传文件失败: {e}")));
+        }
+    }
+    if let Err(e) = file.flush().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(ApiError::internal(format!("提交上传文件失败: {e}")));
+    }
+    drop(file);
+    if written == 0 {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(ApiError::bad("上传内容为空"));
+    }
+    let dest = upload_destination(&dir, &name);
+    std::fs::rename(&temp, &dest).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        ApiError::internal(format!("保存上传文件失败: {e}"))
+    })?;
+    let path = dest.display().to_string();
+    let targets = query_targets(&q).unwrap_or_else(Vec::new);
+    let dry_run = query_bool(&q, "dryRun").unwrap_or(s.publish_dry_run);
+    let force = query_bool(&q, "force").unwrap_or(false);
+    let title = q.get("title").cloned().unwrap_or_default();
+    let job_id = st
+        .store
+        .spawn_local_publish(NewPublishJob {
+            file: path.clone(),
+            title,
+            targets,
+            dry_run,
+            force,
+            source: "upload".into(),
+            settings: s,
+        })
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&dest);
+            ApiError::bad(e)
+        })?;
+    Ok(Json(json!({
+        "ok": true,
+        "jobId": job_id,
+        "file": path,
+        "size": written,
+    })))
+}
+
+/// 手动试跑一次发布（设置页「测试发布」按钮）：不建任务，可临时选目的地 / 演练。
 async fn publish_test(
     State(st): State<AppState>,
     Json(body): Json<Value>,
@@ -520,8 +717,24 @@ async fn publish_test(
         .unwrap_or_default();
     let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
     let s = st.snapshot();
-    let results =
-        crate::publish::publish_one(file.clone(), fname.clone(), fname, size, s, |_| {}).await;
+    let o = crate::publish::PublishOptions {
+        targets: json_targets(body.get("targets")),
+        dry_run: body.get("dryRun").and_then(|v| v.as_bool()),
+        force: body.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
+        task_id: None,
+        source: "test".into(),
+        label: "测试发布".into(),
+    };
+    let results = crate::publish::publish_one_with(
+        file.clone(),
+        fname.clone(),
+        fname,
+        size,
+        s,
+        o,
+        |_| {},
+    )
+    .await;
     Ok(Json(
         json!({ "ok": true, "file": file, "results": results }),
     ))

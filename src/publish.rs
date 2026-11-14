@@ -1,6 +1,6 @@
-//! 下载完成后的自动发布。
+//! 文件发布：下载完成自动发布 + 本机文件手动发布。
 //!
-//! 内核（Rust）只负责两件事：知道「哪个文件刚刚下载完成」，以及把结果写回任务日志 /
+//! 内核（Rust）负责知道「哪个文件要发」、把结果写回任务日志 / ledger，并给手动发布建任务；
 //! ledger。真正的平台动作交给可替换的 driver 脚本（默认 data_dir/publish-driver.mjs，
 //! 一个说 JSON 行协议的小进程）：
 //!
@@ -87,6 +87,12 @@ pub struct LedgerEntry {
     pub at: u64,
     #[serde(default)]
     pub dry_run: bool,
+    /// 手动发布任务 id（自动发布沿用下载任务 id；测试入口为 null）
+    #[serde(default)]
+    pub task_id: Option<String>,
+    /// auto / local / upload / test
+    #[serde(default)]
+    pub source: String,
 }
 
 pub fn ledger_path() -> PathBuf {
@@ -176,6 +182,98 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+
+/// 单次发布的覆盖项：自动发布用默认值；本机发布用页面里的选择。
+#[derive(Debug, Clone)]
+pub struct PublishOptions {
+    /// None = 用设置里的全量目的地；Some(空) 也会归一成全量
+    pub targets: Option<Vec<String>>,
+    /// None = 跟随设置里的演练模式
+    pub dry_run: Option<bool>,
+    /// 忽略 ledger 已成功记录，按勾选目的地重发（可能重复外发）
+    pub force: bool,
+    pub task_id: Option<String>,
+    /// auto / local / upload / test
+    pub source: String,
+    /// 写进日志的动作名
+    pub label: String,
+}
+
+impl Default for PublishOptions {
+    fn default() -> Self {
+        Self {
+            targets: None,
+            dry_run: None,
+            force: false,
+            task_id: None,
+            source: "auto".into(),
+            label: "自动发布".into(),
+        }
+    }
+}
+
+fn effective_targets(s: &crate::settings::Settings, o: &PublishOptions) -> Vec<String> {
+    match &o.targets {
+        Some(list) => normalize_targets(list.clone()),
+        None => s.publish_targets.clone(),
+    }
+}
+
+fn effective_dry_run(s: &crate::settings::Settings, o: &PublishOptions) -> bool {
+    o.dry_run.unwrap_or(s.publish_dry_run)
+}
+
+fn human_status(status: &str) -> &'static str {
+    match status {
+        "ok" => "成功",
+        "dry-run" => "演练未外发",
+        "unavailable" => "未就绪",
+        _ => "失败",
+    }
+}
+
+/// 把一条结果同时送给任务日志、ledger、实时任务快照和返回值。
+fn record_result<F, R>(
+    mut r: PublishResult,
+    file: &str,
+    size: u64,
+    dry_run: bool,
+    o: &PublishOptions,
+    log: &mut F,
+    on_result: &mut R,
+    results: &mut Vec<PublishResult>,
+) where
+    F: FnMut(String),
+    R: FnMut(PublishResult),
+{
+    r.at = now_ms();
+    log(format!("发布 {}：{}（{}）", r.dest, human_status(&r.status), r.detail));
+    append_ledger(&LedgerEntry {
+        file: file.to_string(),
+        size,
+        dest: r.dest.clone(),
+        status: r.status.clone(),
+        detail: r.detail.clone(),
+        url: r.url.clone(),
+        at: r.at,
+        dry_run: dry_run || r.status == "dry-run",
+        task_id: o.task_id.clone(),
+        source: o.source.clone(),
+    });
+    on_result(r.clone());
+    results.push(r);
+}
+
+fn driver_error(detail: impl Into<String>) -> PublishResult {
+    PublishResult {
+        dest: "driver".into(),
+        status: "failed".into(),
+        detail: detail.into(),
+        url: None,
+        at: 0,
+    }
+}
+
 /// 对一个成品文件跑一次发布。
 ///
 /// pending 为空（全发过了）就直接返回空 Vec，不启动 driver。
@@ -186,20 +284,56 @@ pub async fn publish_one<F>(
     title: String,
     size: u64,
     s: crate::settings::Settings,
-    mut log: F,
+    log: F,
 ) -> Vec<PublishResult>
 where
     F: FnMut(String),
 {
-    let done = already_ok(&file, size);
-    let pending: Vec<String> = s
-        .publish_targets
+    publish_one_with_progress(file, file_name, title, size, s, PublishOptions::default(), log, |_| {})
+        .await
+}
+
+/// 带覆盖项的发布（不要求实时结果回调）。
+pub async fn publish_one_with<F>(
+    file: String,
+    file_name: String,
+    title: String,
+    size: u64,
+    s: crate::settings::Settings,
+    o: PublishOptions,
+    log: F,
+) -> Vec<PublishResult>
+where
+    F: FnMut(String),
+{
+    publish_one_with_progress(file, file_name, title, size, s, o, log, |_| {}).await
+}
+
+/// 完整发布入口：每收到一条目的地结果就回调一次，便于任务卡实时显示。
+pub async fn publish_one_with_progress<F, R>(
+    file: String,
+    file_name: String,
+    title: String,
+    size: u64,
+    s: crate::settings::Settings,
+    o: PublishOptions,
+    mut log: F,
+    mut on_result: R,
+) -> Vec<PublishResult>
+where
+    F: FnMut(String),
+    R: FnMut(PublishResult),
+{
+    let targets = effective_targets(&s, &o);
+    let dry_run = effective_dry_run(&s, &o);
+    let done = if o.force { Vec::new() } else { already_ok(&file, size) };
+    let pending: Vec<String> = targets
         .iter()
         .filter(|d| !done.iter().any(|x| x == *d))
         .cloned()
         .collect();
     if pending.is_empty() {
-        log(format!("自动发布：{file_name} 已发布过，跳过"));
+        log(format!("{}：{file_name} 已发布过，跳过", o.label));
         return Vec::new();
     }
 
@@ -217,32 +351,37 @@ where
         "fileName": file_name,
         "title": title,
         "pending": pending,
-        "dryRun": s.publish_dry_run,
+        "dryRun": dry_run,
         "quarkDir": s.publish_quark_dir,
         "shareUrl": s.publish_share_url,
         "sharePasscode": s.publish_share_passcode,
         "cdpUrl": s.publish_cdp_url,
         "platformCommand": s.publish_platform_command,
+        "taskId": o.task_id,
+        "source": o.source,
+        "force": o.force,
     });
 
-    log(format!("自动发布：{file_name} → {}", pending.join(" / ")));
+    log(format!("{}：{file_name} → {}", o.label, pending.join(" / ")));
 
+    let mut results: Vec<PublishResult> = Vec::new();
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            log(format!("自动发布：启动 driver 失败: {e}（{driver}）"));
-            return Vec::new();
+            let detail = format!("启动 driver 失败: {e}（{driver}）");
+            log(format!("{}：{detail}", o.label));
+            record_result(driver_error(detail), &file, size, dry_run, &o, &mut log, &mut on_result, &mut results);
+            return results;
         }
     };
     if let Some(mut stdin) = child.stdin.take() {
         let body = payload.to_string();
         if let Err(e) = stdin.write_all(body.as_bytes()).await {
-            log(format!("自动发布：写 driver 输入失败: {e}"));
+            log(format!("{}：写 driver 输入失败: {e}", o.label));
         }
         let _ = stdin.shutdown().await;
     }
 
-    let mut results: Vec<PublishResult> = Vec::new();
     if let Some(out) = child.stdout.take() {
         let mut lines = BufReader::new(out).lines();
         loop {
@@ -252,32 +391,14 @@ where
                     if t.is_empty() {
                         continue;
                     }
-                    let mut r: PublishResult = match serde_json::from_str::<PublishResult>(t) {
+                    let r: PublishResult = match serde_json::from_str::<PublishResult>(t) {
                         Ok(v) => v,
                         Err(_) => {
                             log(format!("发布驱动输出：{t}"));
                             continue;
                         }
                     };
-                    r.at = now_ms();
-                    let human = match r.status.as_str() {
-                        "ok" => "成功",
-                        "dry-run" => "演练未外发",
-                        "unavailable" => "未就绪",
-                        _ => "失败",
-                    };
-                    log(format!("发布 {}：{}（{}）", r.dest, human, r.detail));
-                    append_ledger(&LedgerEntry {
-                        file: file.clone(),
-                        size,
-                        dest: r.dest.clone(),
-                        status: r.status.clone(),
-                        detail: r.detail.clone(),
-                        url: r.url.clone(),
-                        at: r.at,
-                        dry_run: s.publish_dry_run || r.status == "dry-run",
-                    });
-                    results.push(r);
+                    record_result(r, &file, size, dry_run, &o, &mut log, &mut on_result, &mut results);
                 }
                 Ok(None) => break,
                 Err(_) => break,
@@ -297,7 +418,9 @@ where
     }
     match child.wait().await {
         Ok(st) if !st.success() => {
-            log(format!("发布驱动退出码 {}", st.code().unwrap_or(-1)));
+            let detail = format!("发布驱动退出码 {}", st.code().unwrap_or(-1));
+            log(detail.clone());
+            record_result(driver_error(detail), &file, size, dry_run, &o, &mut log, &mut on_result, &mut results);
         }
         Err(e) => log(format!("发布驱动异常: {e}")),
         _ => {}
@@ -306,7 +429,17 @@ where
         log(format!("发布驱动 stderr：{}", errbuf.trim()));
     }
     if results.is_empty() {
-        log("自动发布：driver 没有返回任何结果".to_string());
+        log(format!("{}：driver 没有返回任何结果", o.label));
+        record_result(
+            driver_error("driver 没有返回任何结果"),
+            &file,
+            size,
+            dry_run,
+            &o,
+            &mut log,
+            &mut on_result,
+            &mut results,
+        );
     }
     results
 }
@@ -347,6 +480,8 @@ mod tests {
             url: None,
             at: 1,
             dry_run: false,
+            task_id: None,
+            source: "test".into(),
         });
         append_ledger(&LedgerEntry {
             file: "/tmp/a.mp4".into(),
@@ -357,11 +492,27 @@ mod tests {
             url: None,
             at: 2,
             dry_run: true,
+            task_id: None,
+            source: "test".into(),
         });
         assert_eq!(already_ok("/tmp/a.mp4", 10), vec!["quark".to_string()]);
         assert!(already_ok("/tmp/a.mp4", 11).is_empty());
         assert_eq!(ledger_recent(5).len(), 2);
         std::env::remove_var("LYCODL_PUBLISH_LEDGER");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_options_override_targets_and_dry_run() {
+        let s = crate::settings::Settings::default();
+        let mut o = PublishOptions::default();
+        assert_eq!(effective_targets(&s, &o), s.publish_targets);
+        assert_eq!(effective_dry_run(&s, &o), s.publish_dry_run);
+        o.targets = Some(vec!["X".into(), "quark".into(), "bogus".into()]);
+        assert_eq!(effective_targets(&s, &o), vec!["quark".to_string(), "x".to_string()]);
+        o.targets = Some(Vec::new());
+        assert_eq!(effective_targets(&s, &o), default_targets());
+        o.dry_run = Some(true);
+        assert!(effective_dry_run(&s, &o));
     }
 }

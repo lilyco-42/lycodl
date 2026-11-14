@@ -47,6 +47,10 @@ export interface PublishLedgerEntry {
   url: string | null;
   at: number;
   dryRun: boolean;
+  /** 手动发布任务 id；自动发布沿用下载任务 id，测试入口为 null */
+  taskId?: string | null;
+  /** auto / local / upload / test */
+  source?: string;
 }
 
 export interface PublishLedgerResponse {
@@ -65,6 +69,21 @@ export interface PublishResult {
   detail: string;
   url: string | null;
   at: number;
+}
+
+/** 本机文件手动发布表单的选项；也用于扩展测试发布接口 */
+export interface PublishSubmission {
+  title?: string;
+  targets: string[];
+  dryRun: boolean;
+  force: boolean;
+}
+
+export interface PublishTaskResponse {
+  ok: true;
+  jobId: string;
+  file: string;
+  size?: number;
 }
 
 export interface SettingsResponse {
@@ -214,6 +233,10 @@ export interface Job {
   warnings: string[];
   createdAt: number;
   endedAt: number | null;
+  /** 以下三项由手动发布任务返回；旧后端可能没有 */
+  jobKind?: string;
+  publishTargets?: string[];
+  publishResults?: PublishResult[];
 }
 
 export interface JobsResponse {
@@ -405,10 +428,59 @@ export const api = {
     request<PublishLedgerResponse>("/api/publish/ledger?limit=" + limit),
 
   /** 用一个已有文件立刻试跑一次发布（会按 ledger 跳过成功过的目的地） */
-  publishTest: (file: string) =>
+  publishTest: (file: string, options: Partial<PublishSubmission> = {}) =>
     request<PublishTestResponse>("/api/publish/test", {
       method: "POST",
-      body: JSON.stringify({ file }),
+      body: JSON.stringify({ file, ...options }),
+    }),
+
+  /** 对运行 lycodl 的本机已有路径建一个发布任务 */
+  publishLocal: (payload: PublishSubmission & { file: string }) =>
+    request<PublishTaskResponse>("/api/publish/local", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /** 浏览器选中的文件以 raw body 流式上传到输出目录，再建发布任务 */
+  publishUpload: (
+    file: File,
+    options: PublishSubmission,
+    onProgress?: (percent: number) => void,
+  ): Promise<PublishTaskResponse> =>
+    new Promise<PublishTaskResponse>((resolve, reject) => {
+      const params = new URLSearchParams({
+        name: file.name,
+        targets: options.targets.join(","),
+        dryRun: String(options.dryRun),
+        force: String(options.force),
+      });
+      const title = (options.title ?? "").trim();
+      if (title !== "") params.set("title", title);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/publish/upload?" + params.toString());
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.onload = () => {
+        let body: unknown = null;
+        try { body = JSON.parse(xhr.responseText); } catch { /* 后端错误体可能不是 JSON */ }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(body as PublishTaskResponse);
+          return;
+        }
+        const msg = isRecord(body) && typeof body.error === "string" && body.error.trim() !== ""
+          ? body.error
+          : "HTTP " + xhr.status + (xhr.statusText !== "" ? " " + xhr.statusText : "");
+        reject(new ApiError(msg, xhr.status));
+      };
+      xhr.onerror = () => reject(new ApiError("网络请求失败或上传中断", 0));
+      if (onProgress !== undefined) {
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && event.total > 0) {
+            onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+          }
+        };
+      }
+      xhr.send(file);
     }),
 
   cancelJob: (id: string) =>

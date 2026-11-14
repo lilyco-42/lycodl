@@ -68,6 +68,15 @@ pub struct Job {
     /// 毫秒时间戳（前端按 >1e12 视为毫秒，两可）
     pub created_at: u64,
     pub ended_at: Option<u64>,
+    /// download / publish；旧任务反序列化时默认空串按下载处理
+    #[serde(default)]
+    pub job_kind: String,
+    /// 本次手动发布勾选的目的地（下载任务为空）
+    #[serde(default)]
+    pub publish_targets: Vec<String>,
+    /// 每个目的地的实时结论（手动发布任务写入，SSE 会带出去）
+    #[serde(default)]
+    pub publish_results: Vec<crate::publish::PublishResult>,
 }
 
 fn now_ms() -> u64 {
@@ -110,6 +119,19 @@ pub struct NewJob {
     /// 直链兜底：有值就不经过 extractor，直接下这条流
     pub direct: Option<DirectMedia>,
     pub direct_title: Option<String>,
+    pub settings: crate::settings::Settings,
+}
+
+/// 本机文件手动发布任务：不跑 yt-dlp，直接把成品交给发布 driver。
+pub struct NewPublishJob {
+    pub file: String,
+    pub title: String,
+    /// 页面勾选的目的地（空会由内核归一为默认全量）
+    pub targets: Vec<String>,
+    pub dry_run: bool,
+    pub force: bool,
+    /// local / upload，写进 ledger 便于追溯来源
+    pub source: String,
     pub settings: crate::settings::Settings,
 }
 
@@ -158,7 +180,12 @@ fn spawn_publish(
             };
             let logger = st.clone();
             let lid = jid.clone();
-            crate::publish::publish_one(f, fname, title, size, s2.clone(), move |line| {
+            let o = crate::publish::PublishOptions {
+                task_id: Some(lid.clone()),
+                source: "auto".into(),
+                ..Default::default()
+            };
+            crate::publish::publish_one_with(f, fname, title, size, s2.clone(), o, move |line| {
                 logger.push_log(&lid, line);
             })
             .await;
@@ -312,6 +339,9 @@ impl JobStore {
     /// 用户不用回去重新解析一遍 —— 网络抖一下就得重填 URL 太难受了。
     pub fn respawn(self: &Arc<Self>, id: &str) -> Result<String, String> {
         let old = self.get(id).ok_or_else(|| format!("任务不存在: {id}"))?;
+        if old.job_kind == "publish" {
+            return Err("手动发布任务请在「发布」页重新提交，避免误重复外发".into());
+        }
         if old.status.is_active() {
             return Err("任务还在进行中，不需要重试".into());
         }
@@ -357,6 +387,9 @@ impl JobStore {
             warnings: Vec::new(),
             created_at: now_ms(),
             ended_at: None,
+            job_kind: "download".into(),
+            publish_targets: Vec::new(),
+            publish_results: Vec::new(),
         };
         if let Ok(mut m) = self.inner.lock() {
             m.insert(id.clone(), job.clone());
@@ -564,6 +597,171 @@ impl JobStore {
                     store.push_log(&jid, format!("下载线程崩溃：{join_err}"));
                 }
             }
+            if let Ok(mut m) = store.cancel.lock() {
+                m.remove(&jid);
+            }
+            store.prune();
+        });
+
+        Ok(id)
+    }
+
+    /// 建一个「本机文件发布」任务：复用同一张任务表、SSE、日志和 ledger。
+    ///
+    /// 与下载任务不同，这里的文件已经是成品，所以 size 一开始就确定，
+    /// 进度按「已收到几个目的地结果 / 勾选了几个目的地」计算。
+    pub fn spawn_local_publish(self: &Arc<Self>, req: NewPublishJob) -> Result<String, String> {
+        let pb = PathBuf::from(req.file.trim());
+        if !pb.is_file() {
+            return Err(format!("文件不存在: {}", req.file.trim()));
+        }
+        let file = std::fs::canonicalize(&pb)
+            .unwrap_or(pb)
+            .display()
+            .to_string();
+        let path = PathBuf::from(&file);
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if file_name.is_empty() {
+            return Err("文件名无效".into());
+        }
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let parent = path
+            .parent()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default();
+        let title = if req.title.trim().is_empty() {
+            file_name.clone()
+        } else {
+            req.title.trim().to_string()
+        };
+        let targets = crate::publish::normalize_targets(req.targets);
+        let source = if req.source == "upload" {
+            "upload".to_string()
+        } else {
+            "local".to_string()
+        };
+
+        let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("pub-{}-{}", now_ms(), n);
+        let job = Job {
+            id: id.clone(),
+            url: file.clone(),
+            title: title.clone(),
+            mode: "publish".into(),
+            quality: String::new(),
+            format_id: None,
+            playlist: false,
+            direct: None,
+            direct_title: None,
+            status: Status::Queued,
+            percent: 0.0,
+            downloaded_bytes: size as i64,
+            total_bytes: Some(size as i64),
+            speed: None,
+            eta: None,
+            output: if parent.is_empty() { None } else { Some(parent) },
+            file_name: Some(file_name.clone()),
+            error: None,
+            playlist_index: None,
+            playlist_count: None,
+            warnings: Vec::new(),
+            created_at: now_ms(),
+            ended_at: None,
+            job_kind: "publish".into(),
+            publish_targets: targets.clone(),
+            publish_results: Vec::new(),
+        };
+        if let Ok(mut m) = self.inner.lock() {
+            m.insert(id.clone(), job.clone());
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut m) = self.cancel.lock() {
+            m.insert(id.clone(), flag.clone());
+        }
+        self.broadcast(&id);
+
+        let store = self.clone();
+        let jid = id.clone();
+        let o = crate::publish::PublishOptions {
+            targets: Some(targets),
+            dry_run: Some(req.dry_run),
+            force: req.force,
+            task_id: Some(id.clone()),
+            source,
+            label: "手动发布".into(),
+        };
+        let settings = req.settings;
+        tokio::spawn(async move {
+            store.acquire_slot().await;
+            let _guard = SlotGuard(store.clone());
+            if flag.load(Ordering::SeqCst) {
+                store.update(&jid, |j| {
+                    j.status = Status::Cancelled;
+                    j.ended_at = Some(now_ms());
+                });
+                return;
+            }
+            store.update(&jid, |j| j.status = Status::Running);
+
+            let logger = store.clone();
+            let lid = jid.clone();
+            let progress_store = store.clone();
+            let progress_id = jid.clone();
+            let results = crate::publish::publish_one_with_progress(
+                file,
+                file_name.clone(),
+                title,
+                size,
+                settings,
+                o,
+                move |line| logger.push_log(&lid, line),
+                move |r| {
+                    progress_store.update(&progress_id, |j| {
+                        j.publish_results.push(r);
+                        let total = j.publish_targets.len().max(1);
+                        j.percent = ((j.publish_results.len() as f64 / total as f64) * 100.0)
+                            .min(100.0);
+                    });
+                },
+            )
+            .await;
+
+            let bad: Vec<&crate::publish::PublishResult> = results
+                .iter()
+                .filter(|r| r.status != "ok" && r.status != "dry-run")
+                .collect();
+            let failed = !bad.is_empty();
+            let error = if failed {
+                Some(format!(
+                    "{} 个目的地未成功：{}",
+                    bad.len(),
+                    bad.iter()
+                        .map(|r| r.dest.as_str())
+                        .collect::<Vec<_>>()
+                        .join("、")
+                ))
+            } else {
+                None
+            };
+            store.update(&jid, |j| {
+                j.status = if failed { Status::Failed } else { Status::Done };
+                j.percent = 100.0;
+                j.error = error;
+                j.ended_at = Some(now_ms());
+            });
+            store.push_log(
+                &jid,
+                if failed {
+                    "手动发布任务结束：部分目的地未成功".into()
+                } else if results.is_empty() {
+                    "手动发布任务完成：ledger 显示已发布过，未重复外发".into()
+                } else {
+                    "手动发布任务完成".into()
+                },
+            );
             if let Ok(mut m) = store.cancel.lock() {
                 m.remove(&jid);
             }

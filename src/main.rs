@@ -19,6 +19,7 @@ mod jobs;
 mod paths;
 mod plugin;
 mod policy;
+mod publish;
 mod settings;
 mod sites;
 mod ytdlp;

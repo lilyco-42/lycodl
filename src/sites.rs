@@ -50,7 +50,16 @@ const fn d(
     tips: &'static [&'static str],
     sample: &'static str,
 ) -> Def {
-    Def { key, name, category, domains, status, tips, sample, path_hint: None }
+    Def {
+        key,
+        name,
+        category,
+        domains,
+        status,
+        tips,
+        sample,
+        path_hint: None,
+    }
 }
 
 // 顺序有意义：带 path_hint 的站要排在它的主站之前。

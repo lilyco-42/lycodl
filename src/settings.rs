@@ -29,6 +29,26 @@ pub struct Settings {
     /// 只用来「代取页面 HTML」，不让它给 cookie —— cf_clearance 绑定 IP+TLS 指纹，
     /// 搬给 yt-dlp 一定 403。
     pub flaresolverr_endpoint: Option<String>,
+    /// 下载完成后自动发布（默认开）
+    ///
+    /// 关掉它就退回「纯下载器」；开着时每个成品文件下载完成后按下面的目的地
+    /// 各发一次，结果写进该任务的日志，并落一条 ledger 防重复。
+    pub auto_publish: bool,
+    /// 发布 driver 命令（用 sh -c 执行；空 = 用 data_dir/publish-driver.mjs）
+    pub publish_driver: String,
+    /// 发布目的地顺序：quark / bilibili / douyin / xhs / kuaishou / youtube / x
+    pub publish_targets: Vec<String>,
+    /// 夸克网盘里的目标目录
+    pub publish_quark_dir: String,
+    /// 分享链接与提取码（X 推文里带上，也给平台提交器当素材）
+    pub publish_share_url: Option<String>,
+    pub publish_share_passcode: Option<String>,
+    /// CDP 调试浏览器地址（X / 平台发布要用已登录的标签页）
+    pub publish_cdp_url: String,
+    /// 平台提交命令（可选：替代 MultiPost 页面里的钩子函数）
+    pub publish_platform_command: Option<String>,
+    /// 演练模式：只打印「将要发到哪」不真正外发
+    pub publish_dry_run: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +61,15 @@ impl Default for Settings {
             impersonate: None,
             browser_bridge: false,
             flaresolverr_endpoint: None,
+            auto_publish: true,
+            publish_driver: String::new(),
+            publish_targets: crate::publish::default_targets(),
+            publish_quark_dir: crate::publish::DEFAULT_QUARK_DIR.to_string(),
+            publish_share_url: None,
+            publish_share_passcode: None,
+            publish_cdp_url: crate::publish::DEFAULT_CDP_URL.to_string(),
+            publish_platform_command: None,
+            publish_dry_run: false,
         }
     }
 }
@@ -66,22 +95,53 @@ pub fn load() -> Settings {
     if s.concurrency == 0 {
         s.concurrency = 1;
     }
-    if s.cookies_from_browser.as_deref().is_some_and(|v| v.trim().is_empty()) {
+    if s.cookies_from_browser
+        .as_deref()
+        .is_some_and(|v| v.trim().is_empty())
+    {
         s.cookies_from_browser = None;
     }
     if s.proxy.as_deref().is_some_and(|v| v.trim().is_empty()) {
         s.proxy = None;
     }
-    if s.impersonate.as_deref().is_some_and(|v| v.trim().is_empty()) {
+    if s.impersonate
+        .as_deref()
+        .is_some_and(|v| v.trim().is_empty())
+    {
         s.impersonate = None;
     }
-    if s
-        .flaresolverr_endpoint
+    if s.flaresolverr_endpoint
         .as_deref()
         .is_some_and(|v| v.trim().is_empty() || v.trim() == "none")
     {
         s.flaresolverr_endpoint = None;
     }
+    // 发布相关的空串归一：前端清空输入框就等于「关掉这一项」
+    if s.publish_share_url
+        .as_deref()
+        .is_some_and(|v| v.trim().is_empty())
+    {
+        s.publish_share_url = None;
+    }
+    if s.publish_share_passcode
+        .as_deref()
+        .is_some_and(|v| v.trim().is_empty())
+    {
+        s.publish_share_passcode = None;
+    }
+    if s.publish_platform_command
+        .as_deref()
+        .is_some_and(|v| v.trim().is_empty())
+    {
+        s.publish_platform_command = None;
+    }
+    if s.publish_cdp_url.trim().is_empty() {
+        s.publish_cdp_url = crate::publish::DEFAULT_CDP_URL.to_string();
+    }
+    if s.publish_quark_dir.trim().is_empty() {
+        s.publish_quark_dir = crate::publish::DEFAULT_QUARK_DIR.to_string();
+    }
+    s.publish_targets = crate::publish::normalize_targets(s.publish_targets.clone());
     s
 }
 

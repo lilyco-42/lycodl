@@ -91,7 +91,10 @@ fn is_extension_origin(origin: &str) -> bool {
 
 /// 取 authority 的 host 部分（去掉端口）。
 fn host_of(authority: &str) -> &str {
-    authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority)
+    authority
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(authority)
 }
 
 fn is_local(authority: &str) -> bool {
@@ -228,7 +231,6 @@ pub async fn guard(State(token): State<SharedToken>, req: Request, next: Next) -
     resp
 }
 
-
 // ── 单元测试 ───────────────────────────────────────────────────────────────
 // 这个 crate 只有 bin target（没有 lib.rs），所以测试必须写在 crate 内部。
 // 覆盖：纯函数 + 令牌落盘 + 真实 guard 中间件的 HTTP 行为（oneshot，无外网）。
@@ -240,10 +242,14 @@ mod tests {
     use axum::middleware::from_fn_with_state;
     use axum::routing::get;
     use axum::Router;
-    use tower::util::ServiceExt as _; // .oneshot(...)
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+    use tower::util::ServiceExt as _; // .oneshot(...)
 
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    // LYCODL_DATA_DIR 是进程级环境变量：三个落盘测试必须串行，
+    // 否则其中一个会读到别人的临时目录，甚至目录已被删掉。
+    static DATA_DIR_LOCK: Mutex<()> = Mutex::new(());
 
     /// 每个测试独占一个数据目录，避免并行测试互相踩 / 改到真实 HOME。
     fn unique_data_dir() -> std::path::PathBuf {
@@ -257,6 +263,11 @@ mod tests {
         d
     }
 
+    /// 返回一把进程级锁；持锁期间独占 LYCODL_DATA_DIR。
+    fn data_dir_lock() -> std::sync::MutexGuard<'static, ()> {
+        DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     // ── 纯函数 ──
 
     #[test]
@@ -267,7 +278,7 @@ mod tests {
         let mut wrong = t.clone();
         wrong.replace_range(63..64, "b");
         assert!(!token_eq(&t, &wrong)); // 末位不同
-        // 两个空串被判定为相等（调用方在 guard 里先用 is_empty 短路，不会真走到这里）
+                                        // 两个空串被判定为相等（调用方在 guard 里先用 is_empty 短路，不会真走到这里）
     }
 
     #[test]
@@ -295,7 +306,10 @@ mod tests {
         assert!(is_same_origin("http://localhost:8766", "127.0.0.1:8766"));
         assert!(is_same_origin("http://[::1]:8766", "[::1]:8766"));
         // Host 不是回环 → 一律拒（DNS rebinding 把恶意域名指到本机）
-        assert!(!is_same_origin("http://127.0.0.1:8766", "evil.example:8766"));
+        assert!(!is_same_origin(
+            "http://127.0.0.1:8766",
+            "evil.example:8766"
+        ));
         assert!(!is_same_origin("http://127.0.0.1:8766", "192.168.1.5:8766"));
         // Origin 是远程站点
         assert!(!is_same_origin("https://evil.example", "127.0.0.1:8766"));
@@ -316,6 +330,7 @@ mod tests {
 
     #[test]
     fn token_is_created_persisted_and_reloaded() {
+        let _guard = data_dir_lock();
         let dir = unique_data_dir();
         std::env::set_var("LYCODL_DATA_DIR", &dir);
         let t = load_or_create_token();
@@ -331,29 +346,37 @@ mod tests {
             let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "plugin.token 必须是 0600");
         }
+        std::env::remove_var("LYCODL_DATA_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn rotate_token_changes_disk_and_memory_value() {
+        let _guard = data_dir_lock();
         let dir = unique_data_dir();
         std::env::set_var("LYCODL_DATA_DIR", &dir);
         let old = load_or_create_token();
         let new = rotate_token().expect("rotate");
         assert_ne!(old, new);
         assert_eq!(new.len(), 64);
-        assert_eq!(std::fs::read_to_string(dir.join("plugin.token")).unwrap(), new);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("plugin.token")).unwrap(),
+            new
+        );
+        std::env::remove_var("LYCODL_DATA_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn corrupted_token_is_regenerated() {
+        let _guard = data_dir_lock();
         let dir = unique_data_dir();
         std::env::set_var("LYCODL_DATA_DIR", &dir);
         std::fs::write(dir.join("plugin.token"), "garbage-not-hex").unwrap();
         let t = load_or_create_token();
         assert_eq!(t.len(), 64);
         assert!(t.bytes().all(|b| b.is_ascii_hexdigit()));
+        std::env::remove_var("LYCODL_DATA_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -406,11 +429,21 @@ mod tests {
     async fn no_origin_is_same_site_and_needs_no_token() {
         let (app, _, _) = test_app();
         let r = app
-            .oneshot(req(axum::http::Method::GET, "/api/health", None, "127.0.0.1:8766", None, &[]))
+            .oneshot(req(
+                axum::http::Method::GET,
+                "/api/health",
+                None,
+                "127.0.0.1:8766",
+                None,
+                &[],
+            ))
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
-        assert!(r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+        assert!(r
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none());
     }
 
     #[tokio::test]
@@ -430,7 +463,9 @@ mod tests {
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
         assert!(has_pna(&r)); // 错误响应也带 CORS/PNA
         assert_eq!(
-            r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            r.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
             "chrome-extension://abcdefghijklmnop"
         );
     }
@@ -468,13 +503,17 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(
-            r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            r.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
             "moz-extension://1234-5678"
         );
         assert!(has_pna(&r));
         assert_eq!(r.headers().get(header::VARY).unwrap(), "Origin");
         assert_eq!(
-            r.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS).unwrap(),
+            r.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+                .unwrap(),
             ALLOW_METHODS
         );
     }
@@ -575,19 +614,31 @@ mod tests {
                 Some("chrome-extension://abcdefghijklmnop"),
                 "127.0.0.1:8766",
                 None, // 预检按规范不带自定义头
-                &[(header::ACCESS_CONTROL_REQUEST_METHOD.as_str(), "POST"),
-                  (header::ACCESS_CONTROL_REQUEST_HEADERS.as_str(), "content-type, x-lycodl-token")],
+                &[
+                    (header::ACCESS_CONTROL_REQUEST_METHOD.as_str(), "POST"),
+                    (
+                        header::ACCESS_CONTROL_REQUEST_HEADERS.as_str(),
+                        "content-type, x-lycodl-token",
+                    ),
+                ],
             ))
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::NO_CONTENT);
         assert_eq!(
-            r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            r.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
             "chrome-extension://abcdefghijklmnop"
         );
-        assert!(has_pna(&r), "必须回 Access-Control-Allow-Private-Network: true");
+        assert!(
+            has_pna(&r),
+            "必须回 Access-Control-Allow-Private-Network: true"
+        );
         assert_eq!(
-            r.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS).unwrap(),
+            r.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+                .unwrap(),
             "content-type, x-lycodl-token"
         );
         assert_eq!(

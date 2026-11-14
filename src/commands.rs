@@ -15,7 +15,11 @@ use crate::ytdlp::{self, DownloadOpts, Event, ProbeOpts};
 // ── 解析 ───────────────────────────────────────────────────────
 
 #[derive(App)]
-#[app(name = "probe", about = "解析链接信息，列出可用格式（不下载）", run = "run_probe")]
+#[app(
+    name = "probe",
+    about = "解析链接信息，列出可用格式（不下载）",
+    run = "run_probe"
+)]
 pub struct ProbeCmd {
     /// 视频或播放列表链接
     pub url: String,
@@ -54,7 +58,11 @@ fn run_probe(app: &ProbeCmd, ctx: &Context) -> Result<Value, AppError> {
 }
 
 #[derive(App)]
-#[app(name = "formats", about = "只列格式表（人类可读）", run = "run_formats")]
+#[app(
+    name = "formats",
+    about = "只列格式表（人类可读）",
+    run = "run_formats"
+)]
 pub struct FormatsCmd {
     /// 视频链接
     pub url: String,
@@ -72,7 +80,10 @@ fn run_formats(app: &FormatsCmd, ctx: &Context) -> Result<Value, AppError> {
     })
     .map_err(AppError::Runtime)?
     .info;
-    ctx.log(LogLevel::Info, format!("{}（{}）", info.title, info.extractor));
+    ctx.log(
+        LogLevel::Info,
+        format!("{}（{}）", info.title, info.extractor),
+    );
     for f in &info.formats {
         let size = f
             .filesize
@@ -168,7 +179,11 @@ fn run_download(app: &DownloadCmd, ctx: &Context) -> Result<Value, AppError> {
                     sp,
                     eta.map(|e| format!("{e}s")).unwrap_or_else(|| "-".into())
                 );
-                ctx.tick(downloaded.max(0) as u64, total.map(|t| t.max(0) as u64), msg);
+                ctx.tick(
+                    downloaded.max(0) as u64,
+                    total.map(|t| t.max(0) as u64),
+                    msg,
+                );
             }
             Event::File(p) => ctx.log(LogLevel::Info, format!("完成: {p}")),
             Event::Warn(w) => ctx.log(LogLevel::Warn, format!("跳过: {w}")),
@@ -185,7 +200,11 @@ fn run_download(app: &DownloadCmd, ctx: &Context) -> Result<Value, AppError> {
 // ── 内核（yt-dlp）热更新 ────────────────────────────────────────
 
 #[derive(App)]
-#[app(name = "kernel", about = "查看当前 yt-dlp 内核位置与版本", run = "run_kernel")]
+#[app(
+    name = "kernel",
+    about = "查看当前 yt-dlp 内核位置与版本",
+    run = "run_kernel"
+)]
 pub struct KernelCmd {}
 
 fn run_kernel(_app: &KernelCmd, ctx: &Context) -> Result<Value, AppError> {
@@ -285,6 +304,16 @@ pub struct SettingsSetCmd {
     pub concurrency: Option<usize>,
     /// 浏览器指纹伪装目标（chrome / safari / firefox …；填 none 关闭）
     pub impersonate: Option<String>,
+    /// 下载完成后自动发布（true/false）
+    pub auto_publish: Option<bool>,
+    /// 逗号分隔目的地；空字符串恢复默认全开
+    pub publish_targets: Option<String>,
+    /// 自动发布 driver 路径
+    pub publish_driver: Option<String>,
+    /// 夸克网盘目标目录
+    pub publish_quark_dir: Option<String>,
+    /// 演练模式，不真正外发
+    pub publish_dry_run: Option<bool>,
 }
 
 fn run_settings_set(app: &SettingsSetCmd, ctx: &Context) -> Result<Value, AppError> {
@@ -318,6 +347,27 @@ fn run_settings_set(app: &SettingsSetCmd, ctx: &Context) -> Result<Value, AppErr
         } else {
             Some(t.to_string())
         };
+    }
+    if let Some(v) = app.auto_publish {
+        s.auto_publish = v;
+    }
+    if let Some(v) = app.publish_targets.as_ref() {
+        s.publish_targets = if v.trim().is_empty() {
+            crate::publish::default_targets()
+        } else {
+            crate::publish::normalize_targets(v.split(',').map(|x| x.trim().to_string()).collect())
+        };
+    }
+    if let Some(v) = app.publish_driver.as_ref() {
+        s.publish_driver = v.trim().to_string();
+    }
+    if let Some(v) = app.publish_quark_dir.as_ref() {
+        if !v.trim().is_empty() {
+            s.publish_quark_dir = v.trim().to_string();
+        }
+    }
+    if let Some(v) = app.publish_dry_run {
+        s.publish_dry_run = v;
     }
     settings::save(&s).map_err(AppError::Runtime)?;
     settings::ensure_output_dir(&s).map_err(AppError::Runtime)?;

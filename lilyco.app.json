@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "lycodl",
+  "name": "Lycodl",
+  "description": "yt-dlp 内核的多平台视频下载器：本地 Web 控制台、CLI、TUI 与 MCP 四端",
+  "repository": "https://github.com/lilyco-42/lycodl",
+  "binary": "lycodl",
+  "capabilities": { "run": true, "schema": true, "mcp": true },
+  "run": {
+    "args": ["--web"],
+    "env": { "LYCODL_PORT": "8767", "LYCODL_NO_OPEN": "1" },
+    "url": "http://127.0.0.1:8767"
+  },
+  "mcp": { "args": ["--mcp"] },
+  "schema": { "args": ["--schema"] },
+  "release": {
+    "repo": "lilyco-42/lycodl",
+    "assets": {
+      "linux-x64": "lycodl-linux-x64.tar.gz",
+      "linux-aarch64": "lycodl-linux-aarch64.tar.gz",
+      "macos-universal": "lycodl-macos-universal.tar.gz",
+      "windows-x64": "lycodl-windows-x64.zip"
+    }
+  },
+  "dev": {
+    "tasks": {
+      "check": ["cargo", "check"],
+      "test": ["cargo", "test"],
+      "build": ["cargo", "build", "--release"],
+      "web-build": ["pnpm", "--dir", "web", "build"]
+    }
+  }
+}

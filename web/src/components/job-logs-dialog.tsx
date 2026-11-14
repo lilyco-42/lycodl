@@ -27,27 +27,21 @@ export function JobLogsButton({ jobId }: JobLogsButtonProps) {
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api
-      .jobLogs(jobId)
-      .then((data) => {
-        if (!cancelled) {
-          setLogs(data.logs);
-        }
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) {
-          setError(errorMessage(cause));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      });
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const load = (first: boolean) => {
+      if (first) setLoading(true);
+      api
+        .jobLogs(jobId)
+        .then((data) => { if (!cancelled) { setLogs(data.logs); setError(null); } })
+        .catch((cause: unknown) => { if (!cancelled) setError(errorMessage(cause)); })
+        .finally(() => { if (!cancelled && first) setLoading(false); });
+    };
+    load(true);
+    // 下载任务 Done 后发布仍在后台跑；打开日志时每 2 秒刷新，结果无需手动重开。
+    timer = setInterval(() => load(false), 2000);
     return () => {
       cancelled = true;
+      if (timer !== undefined) clearInterval(timer);
     };
   }, [open, jobId]);
 

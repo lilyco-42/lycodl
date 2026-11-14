@@ -31,13 +31,22 @@ pub struct ApiError {
 
 impl ApiError {
     fn bad(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
     }
     fn not_found(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: msg.into() }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: msg.into(),
+        }
     }
     fn internal(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: msg.into(),
+        }
     }
 }
 
@@ -70,7 +79,10 @@ impl KernelWatch {
     pub fn set(&self, version: String) {
         let at = now_ms();
         if let Ok(mut w) = self.inner.write() {
-            *w = Some(Latest { version, checked_at: at });
+            *w = Some(Latest {
+                version,
+                checked_at: at,
+            });
         }
     }
 }
@@ -125,6 +137,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs/{id}/cancel", post(cancel_job))
         .route("/api/jobs/{id}/retry", post(retry_job))
         .route("/api/jobs/{id}/logs", get(job_logs))
+        .route("/api/publish/ledger", get(publish_ledger))
+        .route("/api/publish/test", post(publish_test))
         .route("/api/files", get(list_files))
         .route("/api/reveal", post(reveal))
         .route("/api/files/{name}", get(serve_file))
@@ -132,8 +146,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/caps", get(caps))
         .route("/api/sites", get(sites))
         .route("/api/extractors", get(extractors))
-        .route("/api/plugin-token", get(plugin_token_get).post(plugin_token_rotate))
-        .layer(axum::middleware::from_fn_with_state(plugin_token, crate::plugin::guard))
+        .route(
+            "/api/plugin-token",
+            get(plugin_token_get).post(plugin_token_rotate),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            plugin_token,
+            crate::plugin::guard,
+        ))
         .with_state(state)
         .fallback(static_file)
 }
@@ -219,6 +239,51 @@ async fn put_settings(
             _ => None,
         };
     }
+    // ── 自动发布 ──
+    if let Some(v) = patch.get("autoPublish").and_then(|v| v.as_bool()) {
+        next.auto_publish = v;
+    }
+    if let Some(v) = patch.get("publishDriver") {
+        next.publish_driver = v.as_str().unwrap_or("").trim().to_string();
+    }
+    if let Some(v) = patch.get("publishTargets").and_then(|v| v.as_array()) {
+        let list: Vec<String> = v
+            .iter()
+            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+            .collect();
+        next.publish_targets = crate::publish::normalize_targets(list);
+    }
+    if let Some(v) = patch.get("publishQuarkDir").and_then(|v| v.as_str()) {
+        if !v.trim().is_empty() {
+            next.publish_quark_dir = v.trim().to_string();
+        }
+    }
+    if let Some(v) = patch.get("publishShareUrl") {
+        next.publish_share_url = match v.as_str() {
+            Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            _ => None,
+        };
+    }
+    if let Some(v) = patch.get("publishSharePasscode") {
+        next.publish_share_passcode = match v.as_str() {
+            Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            _ => None,
+        };
+    }
+    if let Some(v) = patch.get("publishCdpUrl").and_then(|v| v.as_str()) {
+        if !v.trim().is_empty() {
+            next.publish_cdp_url = v.trim().to_string();
+        }
+    }
+    if let Some(v) = patch.get("publishPlatformCommand") {
+        next.publish_platform_command = match v.as_str() {
+            Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            _ => None,
+        };
+    }
+    if let Some(v) = patch.get("publishDryRun").and_then(|v| v.as_bool()) {
+        next.publish_dry_run = v;
+    }
 
     settings::save(&next).map_err(ApiError::internal)?;
     settings::ensure_output_dir(&next).map_err(ApiError::bad)?;
@@ -240,7 +305,10 @@ async fn ytdlp_info(
     State(st): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Json<Value> {
-    let check = q.get("check").map(|v| v == "1" || v == "true").unwrap_or(false);
+    let check = q
+        .get("check")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
     match ytdlp::locate() {
         Ok(k) => {
             let mut latest: Option<String> = None;
@@ -304,7 +372,10 @@ struct ProbeReq {
     url: String,
 }
 
-async fn probe(State(st): State<AppState>, Json(req): Json<ProbeReq>) -> Result<Json<Value>, ApiError> {
+async fn probe(
+    State(st): State<AppState>,
+    Json(req): Json<ProbeReq>,
+) -> Result<Json<Value>, ApiError> {
     let url = req.url.trim().to_string();
     if url.is_empty() {
         return Err(ApiError::bad("链接不能为空"));
@@ -364,7 +435,10 @@ fn default_quality() -> String {
     "best".into()
 }
 
-async fn download(State(st): State<AppState>, Json(req): Json<DownloadReq>) -> Result<Json<Value>, ApiError> {
+async fn download(
+    State(st): State<AppState>,
+    Json(req): Json<DownloadReq>,
+) -> Result<Json<Value>, ApiError> {
     let url = req.url.trim().to_string();
     if url.is_empty() {
         return Err(ApiError::bad("链接不能为空"));
@@ -392,7 +466,10 @@ async fn download(State(st): State<AppState>, Json(req): Json<DownloadReq>) -> R
 }
 
 /// 重试：拿原任务的参数重新排一个任务（失败 / 取消后一键重来，不必回头重新解析）
-async fn retry_job(State(st): State<AppState>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn retry_job(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     let new_id = st.store.respawn(&id).map_err(ApiError::bad)?;
     Ok(Json(json!({ "ok": true, "jobId": new_id })))
 }
@@ -401,12 +478,53 @@ async fn list_jobs(State(st): State<AppState>) -> Json<Value> {
     Json(json!({ "jobs": st.store.list() }))
 }
 
-async fn cancel_job(State(st): State<AppState>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn cancel_job(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     if st.store.cancel(&id) {
         Ok(Json(json!({ "ok": true })))
     } else {
         Err(ApiError::not_found(format!("任务不存在: {id}")))
     }
+}
+
+/// 最近的发布记录（新的在前）：文件 × 目的地，含状态、详情、链接
+async fn publish_ledger(Query(q): Query<HashMap<String, String>>) -> Json<Value> {
+    let limit = q
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(500);
+    Json(json!({ "entries": crate::publish::ledger_recent(limit) }))
+}
+
+/// 手动试跑一次发布（设置页「测试发布」按钮）：只发配置里的目的地，不碰 ledger 之外的逻辑
+async fn publish_test(
+    State(st): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let file = body
+        .get("file")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("缺少 file 参数"))?;
+    let pb = StdPath::new(&file);
+    if !pb.is_file() {
+        return Err(ApiError::bad(format!("文件不存在: {file}")));
+    }
+    let fname = pb
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+    let s = st.snapshot();
+    let results =
+        crate::publish::publish_one(file.clone(), fname.clone(), fname, size, s, |_| {}).await;
+    Ok(Json(
+        json!({ "ok": true, "file": file, "results": results }),
+    ))
 }
 
 /// 任务的 yt-dlp 原始日志（排障用）
@@ -418,7 +536,10 @@ async fn job_logs(State(st): State<AppState>, Path(id): Path<String>) -> Json<Va
 async fn job_events(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<SseEvent, std::convert::Infallible>>>, ApiError> {
+) -> Result<
+    Sse<impl futures_util::Stream<Item = Result<SseEvent, std::convert::Infallible>>>,
+    ApiError,
+> {
     let first = st
         .store
         .get(&id)
@@ -479,7 +600,10 @@ async fn list_files(State(st): State<AppState>) -> Result<Json<Value>, ApiError>
             continue;
         }
         // yt-dlp 的中间文件（.part / .ytdl / .temp）不当作成品展示
-        if [".part", ".ytdl", ".temp"].iter().any(|s| name.ends_with(s)) {
+        if [".part", ".ytdl", ".temp"]
+            .iter()
+            .any(|s| name.ends_with(s))
+        {
             continue;
         }
         let modified = meta
@@ -585,7 +709,10 @@ fn open_in_file_manager(target: &std::path::Path, dir: &std::path::Path) -> Opti
         .map(|_| "directory")
 }
 
-async fn serve_file(State(st): State<AppState>, Path(name): Path<String>) -> Result<Response, ApiError> {
+async fn serve_file(
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Response, ApiError> {
     if name.contains('/') || name.contains("..") || name.trim().is_empty() {
         return Err(ApiError::bad("文件名非法"));
     }
@@ -595,7 +722,8 @@ async fn serve_file(State(st): State<AppState>, Path(name): Path<String>) -> Res
     if !path.is_file() {
         return Err(ApiError::not_found(format!("文件不存在: {name}")));
     }
-    let bytes = std::fs::read(&path).map_err(|e| ApiError::internal(format!("读取文件失败: {e}")))?;
+    let bytes =
+        std::fs::read(&path).map_err(|e| ApiError::internal(format!("读取文件失败: {e}")))?;
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
     let disp = if name.chars().all(|c| c.is_ascii_graphic() || c == ' ') && !name.contains('"') {
         format!("attachment; filename=\"{name}\"")
@@ -686,11 +814,9 @@ fn safety_name(t: lilyco::prelude::SafetyTier) -> &'static str {
 /// 用户就不用一个个猜是 Cookie 的问题还是 ffmpeg 没装。
 async fn caps(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     let out = st.snapshot().output_dir;
-    let caps = tokio::task::spawn_blocking(move || {
-        crate::caps::all(std::path::Path::new(&out))
-    })
-    .await
-    .map_err(|e| ApiError::internal(format!("能力自检线程崩溃: {e}")))?;
+    let caps = tokio::task::spawn_blocking(move || crate::caps::all(std::path::Path::new(&out)))
+        .await
+        .map_err(|e| ApiError::internal(format!("能力自检线程崩溃: {e}")))?;
     Ok(Json(json!(caps)))
 }
 
@@ -782,7 +908,11 @@ async fn static_file(uri: Uri) -> Response {
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
             resp
         }
-        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "页面不存在" }))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "页面不存在" })),
+        )
+            .into_response(),
     }
 }
 
@@ -885,7 +1015,10 @@ pub fn serve() {
             }
         }
         let Some(listener) = listener else {
-            eprintln!("lycodl: 绑定 127.0.0.1:{port}..{} 全部失败: {last_err}", port.saturating_add(20));
+            eprintln!(
+                "lycodl: 绑定 127.0.0.1:{port}..{} 全部失败: {last_err}",
+                port.saturating_add(20)
+            );
             std::process::exit(1);
         };
         let port = chosen;
@@ -906,11 +1039,13 @@ pub fn serve() {
 
 /// 有图形会话时顺手开浏览器（LYCODL_NO_OPEN=1 可关闭）
 fn maybe_open_browser(url: &str) {
-    if std::env::var("LYCODL_NO_OPEN").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("LYCODL_NO_OPEN")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         return;
     }
-    let has_display =
-        std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
+    let has_display = std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
     if !has_display {
         return;
     }
@@ -925,7 +1060,9 @@ fn maybe_open_browser(url: &str) {
 /// 给测试用：只拿 Router 不自起监听
 #[allow(dead_code)]
 pub fn app_for_test(dir: &StdPath) -> Router {
-    let mut s = Settings::default();
-    s.output_dir = dir.display().to_string();
+    let s = Settings {
+        output_dir: dir.display().to_string(),
+        ..Default::default()
+    };
     router(AppState::new(s))
 }

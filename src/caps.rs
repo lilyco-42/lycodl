@@ -32,7 +32,12 @@ pub struct CapTool {
 
 impl CapTool {
     fn missing() -> Self {
-        Self { found: false, name: None, path: None, version: None }
+        Self {
+            found: false,
+            name: None,
+            path: None,
+            version: None,
+        }
     }
 }
 
@@ -123,7 +128,11 @@ pub fn ffmpeg_path() -> Option<PathBuf> {
 pub fn ffmpeg_dir() -> Option<String> {
     let p = ffmpeg_path()?;
     let dir = p.parent()?.display().to_string();
-    if dir.trim().is_empty() { None } else { Some(dir) }
+    if dir.trim().is_empty() {
+        None
+    } else {
+        Some(dir)
+    }
 }
 
 pub fn which(program: &str) -> Result<PathBuf, String> {
@@ -150,7 +159,13 @@ fn first_line_version(exe: &Path, arg: &str) -> Option<String> {
     }
     // 形如 "ffmpeg version n9.0.2 Copyright …" 或 "v26.13.0"
     if let Some(rest) = line.split_once("version ") {
-        return Some(rest.1.split_whitespace().next().unwrap_or(rest.1).to_string());
+        return Some(
+            rest.1
+                .split_whitespace()
+                .next()
+                .unwrap_or(rest.1)
+                .to_string(),
+        );
     }
     Some(line)
 }
@@ -204,7 +219,10 @@ pub fn impersonate_targets() -> CapImpersonate {
     }
     let value = impersonate_targets_uncached();
     if let Ok(mut guard) = IMPERSONATE.lock() {
-        *guard = Some(CachedImpersonate { at: Instant::now(), value: value.clone() });
+        *guard = Some(CachedImpersonate {
+            at: Instant::now(),
+            value: value.clone(),
+        });
     }
     value
 }
@@ -213,7 +231,11 @@ fn impersonate_targets_uncached() -> CapImpersonate {
     let kernel = match ytdlp::locate() {
         Ok(k) => k,
         Err(e) => {
-            return CapImpersonate { available: false, targets: Vec::new(), error: Some(e) }
+            return CapImpersonate {
+                available: false,
+                targets: Vec::new(),
+                error: Some(e),
+            }
         }
     };
     let out = Command::new(&kernel.path)
@@ -260,7 +282,11 @@ fn impersonate_targets_uncached() -> CapImpersonate {
             }),
         };
     }
-    CapImpersonate { available: true, targets, error: None }
+    CapImpersonate {
+        available: true,
+        targets,
+        error: None,
+    }
 }
 
 /// 挑一个默认伪装目标：优先桌面 Chrome（最多站点认它），否则取第一个。
@@ -312,7 +338,9 @@ pub fn detected_browsers() -> Vec<CapBrowser> {
 /// 自动挑一个浏览器取 Cookie：优先 Chromium 系（yt-dlp 支持最好）。
 pub fn auto_cookie_browser() -> Option<String> {
     let found = detected_browsers();
-    for prefer in ["chromium", "chrome", "edge", "brave", "vivaldi", "firefox", "opera"] {
+    for prefer in [
+        "chromium", "chrome", "edge", "brave", "vivaldi", "firefox", "opera",
+    ] {
         if found.iter().any(|b| b.browser == prefer) {
             return Some(prefer.to_string());
         }
@@ -345,7 +373,13 @@ fn extractors_uncached() -> CachedExtractors {
     let kernel = match ytdlp::locate() {
         Ok(k) => k,
         Err(e) => {
-            return CachedExtractors { at, at_ms, lines: 0, names: Vec::new(), error: Some(e) }
+            return CachedExtractors {
+                at,
+                at_ms,
+                lines: 0,
+                names: Vec::new(),
+                error: Some(e),
+            }
         }
     };
     let out = Command::new(&kernel.path)
@@ -375,7 +409,13 @@ fn extractors_uncached() -> CachedExtractors {
             } else {
                 None
             };
-            CachedExtractors { at, at_ms, lines, names, error }
+            CachedExtractors {
+                at,
+                at_ms,
+                lines,
+                names,
+                error,
+            }
         }
         Err(e) => CachedExtractors {
             at,
@@ -502,8 +542,10 @@ pub fn all(output_dir: &Path) -> Capabilities {
         warnings.push("没找到 JS 运行时（node/deno/bun）：YouTube 等站点的解签名会失败。".into());
     }
     if browsers.is_empty() {
-        warnings
-            .push("没检测到本机浏览器：需要登录/要 Cookie 的站点（YouTube、抖音、Vimeo…）会解析失败。".into());
+        warnings.push(
+            "没检测到本机浏览器：需要登录/要 Cookie 的站点（YouTube、抖音、Vimeo…）会解析失败。"
+                .into(),
+        );
     }
     if !imp.available {
         warnings.push("指纹伪装不可用：遇到 Cloudflare 防护的站点只能靠 Cookie 或代理。".into());

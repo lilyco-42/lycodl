@@ -113,6 +113,59 @@ pub struct NewJob {
     pub settings: crate::settings::Settings,
 }
 
+/// 下载成功后就地起一次「自动发布」。
+///
+/// 每个成品文件各跑一次 driver，ledger 保证同一文件（路径 + 大小）不重复外发。
+/// 发布是后台任务：任务本身的 Done 状态先落地，用户马上能在文件列表里看到成品，
+/// 发布进度随后以日志行追加（前端点「日志」就能看到每个目的地的结论）。
+fn spawn_publish(
+    store: &Arc<JobStore>,
+    jid: &str,
+    file: &str,
+    s: &crate::settings::Settings,
+    collected: &Arc<Mutex<Vec<String>>>,
+) {
+    if !s.auto_publish {
+        return;
+    }
+    let mut files = collected.lock().map(|v| v.clone()).unwrap_or_default();
+    if files.is_empty() {
+        // 兜底：某些模式下 yt-dlp 没打 LYCOFILE，但下载线程报告了成品路径
+        files.push(file.to_string());
+    }
+    let mut uniq: Vec<String> = Vec::new();
+    for f in files {
+        if !uniq.iter().any(|x| x == &f) {
+            uniq.push(f);
+        }
+    }
+    let job_title = store.get(jid).map(|j| j.title).unwrap_or_default();
+    let st = store.clone();
+    let jid = jid.to_string();
+    let s2 = s.clone();
+    tokio::spawn(async move {
+        for f in uniq {
+            let pb = PathBuf::from(&f);
+            let fname = pb
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let size = std::fs::metadata(&f).map(|m| m.len()).unwrap_or(0);
+            let title = if job_title.trim().is_empty() {
+                fname.clone()
+            } else {
+                job_title.clone()
+            };
+            let logger = st.clone();
+            let lid = jid.clone();
+            crate::publish::publish_one(f, fname, title, size, s2.clone(), move |line| {
+                logger.push_log(&lid, line);
+            })
+            .await;
+        }
+    });
+}
+
 impl JobStore {
     pub fn new(concurrency: usize) -> Self {
         let (tx, _rx) = broadcast::channel(2048);
@@ -330,6 +383,12 @@ impl JobStore {
 
         let store = self.clone();
         let jid = id.clone();
+        // 发布用：配置快照 + 本次任务产出的所有成品路径。
+        // 为什么要在 Event::File 里收集而不是用 download_blocking 的返回值：
+        // 播放列表只返回最后一项，靠返回值会漏掉前面的成品。
+        let publish_settings = req.settings.clone();
+        let publish_files: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let publish_files_cb = publish_files.clone();
         tokio::spawn(async move {
             store.acquire_slot().await;
             let _guard = SlotGuard(store.clone());
@@ -382,7 +441,8 @@ impl JobStore {
                         // 否则每换一项进度条就从 100% 掉回 0%，看不出整体推进。
                         // 再取 max：yt-dlp 在换项瞬间会吐出 total=NA 的残留行（download 还是上一项的字节数），
                         // 不夹住的话整体进度会突然往回掉。
-                        let is_playlist = matches!((index, j.playlist_count), (Some(_), Some(n)) if n > 0);
+                        let is_playlist =
+                            matches!((index, j.playlist_count), (Some(_), Some(n)) if n > 0);
                         let cand = match (index, j.playlist_count) {
                             (Some(i), Some(n)) if n > 0 => {
                                 let done = (i.saturating_sub(1)) as f64;
@@ -393,7 +453,11 @@ impl JobStore {
                                 _ => j.percent,
                             },
                         };
-                        j.percent = if is_playlist { j.percent.max(cand) } else { cand };
+                        j.percent = if is_playlist {
+                            j.percent.max(cand)
+                        } else {
+                            cand
+                        };
                     }),
                     Event::File(p) => {
                         let pb = PathBuf::from(&p);
@@ -409,6 +473,11 @@ impl JobStore {
                             j.output = Some(parent);
                             j.file_name = Some(name);
                         });
+                        if let Ok(mut v) = publish_files_cb.lock() {
+                            if !v.iter().any(|x| x == &p) {
+                                v.push(p);
+                            }
+                        }
                     }
                     Event::Warn(w) => {
                         s2.push_log(&j2, format!("WARN: {w}"));
@@ -462,6 +531,7 @@ impl JobStore {
                         j.ended_at = Some(now_ms());
                     });
                     store.push_log(&jid, "任务完成".into());
+                    spawn_publish(&store, &jid, &file, &publish_settings, &publish_files);
                 }
                 Ok(Err(e)) => {
                     let cancelled = e.contains("已取消") || e.contains("cancel");
@@ -478,7 +548,11 @@ impl JobStore {
                     });
                     store.push_log(
                         &jid,
-                        if cancelled { "任务已取消".to_string() } else { format!("任务失败：{e}") },
+                        if cancelled {
+                            "任务已取消".to_string()
+                        } else {
+                            format!("任务失败：{e}")
+                        },
                     );
                 }
                 Err(join_err) => {
@@ -504,7 +578,7 @@ impl JobStore {
         let mut kill: Vec<String> = Vec::new();
         if let Ok(m) = self.inner.lock() {
             let mut done: Vec<&Job> = m.values().filter(|j| !j.status.is_active()).collect();
-            done.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            done.sort_by_key(|a| std::cmp::Reverse(a.created_at));
             for j in done.into_iter().skip(200) {
                 kill.push(j.id.clone());
             }

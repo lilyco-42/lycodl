@@ -67,7 +67,9 @@ pub fn locate() -> Result<Kernel, String> {
     }
     Err(match first_error {
         Some(e) => format!("没找到可用的 yt-dlp（{e}）"),
-        None => "没找到 yt-dlp：请安装 yt-dlp，或在设置页点「一键更新内核」由 lycodl 自己管理".into(),
+        None => {
+            "没找到 yt-dlp：请安装 yt-dlp，或在设置页点「一键更新内核」由 lycodl 自己管理".into()
+        }
     })
 }
 
@@ -231,16 +233,18 @@ fn i(v: &serde_json::Value, k: &str) -> Option<i64> {
 }
 
 fn entry_url(v: &serde_json::Value) -> Option<String> {
-    s(v, "webpage_url")
-        .or_else(|| s(v, "url"))
-        .or_else(|| {
-            let id = s(v, "id")?;
-            let ie = v
-                .get("ie_key")
-                .and_then(|x| x.as_str())
-                .unwrap_or("Youtube");
-            Some(format!("https://www.youtube.com/watch?v={id}").replace("Youtube", ie).to_string())
-        })
+    s(v, "webpage_url").or_else(|| s(v, "url")).or_else(|| {
+        let id = s(v, "id")?;
+        let ie = v
+            .get("ie_key")
+            .and_then(|x| x.as_str())
+            .unwrap_or("Youtube");
+        Some(
+            format!("https://www.youtube.com/watch?v={id}")
+                .replace("Youtube", ie)
+                .to_string(),
+        )
+    })
 }
 
 /// 把 yt-dlp -J 的 JSON 归一化成前端契约里的 VideoInfo
@@ -290,7 +294,7 @@ pub fn parse_info(root: &serde_json::Value) -> VideoInfo {
         }
     }
     // 高清在前，方便前端直接展示
-    formats.sort_by(|a, b| b.height.unwrap_or(0).cmp(&a.height.unwrap_or(0)));
+    formats.sort_by_key(|a| std::cmp::Reverse(a.height.unwrap_or(0)));
 
     VideoInfo {
         id: s(root, "id").unwrap_or_default(),
@@ -303,7 +307,8 @@ pub fn parse_info(root: &serde_json::Value) -> VideoInfo {
         webpage_url: s(root, "webpage_url")
             .or_else(|| s(root, "original_url"))
             .unwrap_or_default(),
-        extractor: s(root, "extractor").unwrap_or_else(|| s(root, "extractor_key").unwrap_or_default()),
+        extractor: s(root, "extractor")
+            .unwrap_or_else(|| s(root, "extractor_key").unwrap_or_default()),
         is_playlist,
         entry_count: entries.len(),
         entries,
@@ -319,7 +324,11 @@ pub fn parse_info(root: &serde_json::Value) -> VideoInfo {
 /// 哪一级成功就把那一级记进策略记忆，下次同站直接走同一条路。
 pub fn probe(o: &ProbeOpts) -> Result<ProbeOutcome, String> {
     let site = crate::sites::match_url(&o.url);
-    let plans = build_plans(o, site.as_ref().and_then(|s| crate::sites::strategy_for(&s.key)));
+    let plans = build_plans(
+        o,
+        site.as_ref()
+            .and_then(|s| crate::sites::strategy_for(&s.key)),
+    );
     let total = plans.len();
     let mut attempts: Vec<ProbeAttempt> = Vec::new();
     let mut last_error: Option<String> = None;
@@ -499,7 +508,11 @@ fn build_plans(o: &ProbeOpts, remembered: Option<String>) -> Vec<ProbePlan> {
             extra: Vec::new(),
         });
     }
-    if o.flaresolverr.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+    if o.flaresolverr
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
         plans.push(ProbePlan {
             name: "flaresolverr",
             label: "FlareSolverr 代取页面",
@@ -562,18 +575,23 @@ fn probe_once(o: &ProbeOpts, plan: &ProbePlan) -> Result<ProbeHit, String> {
                     out.title
                 )
             };
-            let cf = out.cookies_file.clone().ok_or_else(|| {
-                format!("{note}；也没拿到可用的 Cookie")
-            })?;
+            let cf = out
+                .cookies_file
+                .clone()
+                .ok_or_else(|| format!("{note}；也没拿到可用的 Cookie"))?;
             let mut p2 = plan.clone();
             p2.cookies_file = Some(cf);
             p2.user_agent = Some(out.user_agent.clone());
-            probe_ytdlp(o, &p2).map(|info| ProbeHit { info, direct: None }).map_err(|e| {
-                // yt-dlp 的报错只说它自己看到什么；浏览器实际看到了什么，只有这里能说清楚
-                format!("{e}
+            probe_ytdlp(o, &p2)
+                .map(|info| ProbeHit { info, direct: None })
+                .map_err(|e| {
+                    // yt-dlp 的报错只说它自己看到什么；浏览器实际看到了什么，只有这里能说清楚
+                    format!(
+                        "{e}
 
-{note}")
-            })
+{note}"
+                    )
+                })
         }
         PlanKind::Flare => {
             let ep = o
@@ -597,7 +615,12 @@ fn probe_once(o: &ProbeOpts, plan: &ProbePlan) -> Result<ProbeHit, String> {
 
 /// 浏览器 / FlareSolverr 拿到的是「一条真实在播的媒体地址」，
 /// 没有 extractor 给的元数据，这里拼一个够前端展示的 VideoInfo。
-fn direct_info(o: &ProbeOpts, hit: &crate::browser::MediaHit, page_title: &str, source: &str) -> VideoInfo {
+fn direct_info(
+    o: &ProbeOpts,
+    hit: &crate::browser::MediaHit,
+    page_title: &str,
+    source: &str,
+) -> VideoInfo {
     let title = {
         let t = page_title.trim();
         if t.is_empty() {
@@ -627,7 +650,11 @@ fn direct_info(o: &ProbeOpts, hit: &crate::browser::MediaHit, page_title: &str, 
             height: None,
             vcodec: None,
             acodec: None,
-            filesize: if hit.size > 0 { Some(hit.size as i64) } else { None },
+            filesize: if hit.size > 0 {
+                Some(hit.size as i64)
+            } else {
+                None
+            },
             tbr: None,
             note: Some(match source {
                 "flaresolverr" => "FlareSolverr 代取页面挖到的直链".to_string(),
@@ -639,7 +666,11 @@ fn direct_info(o: &ProbeOpts, hit: &crate::browser::MediaHit, page_title: &str, 
 
 fn guess_ext(url: &str, mime: &str) -> String {
     let low = url.to_lowercase();
-    if low.contains(".m3u8") || mime.contains("mpegurl") || mime.contains("dash+xml") || low.contains(".mpd") {
+    if low.contains(".m3u8")
+        || mime.contains("mpegurl")
+        || mime.contains("dash+xml")
+        || low.contains(".mpd")
+    {
         // HLS/DASH 最终都会被合成 mp4
         return "mp4".into();
     }
@@ -764,7 +795,11 @@ pub fn strategy_label(name: &str) -> &'static str {
 }
 
 fn first_line(s: &str) -> String {
-    let l = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let l = s
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     if l.chars().count() > 240 {
         format!("{}…", l.chars().take(240).collect::<String>())
     } else {
@@ -798,7 +833,10 @@ pub fn friendly_error(raw: &str) -> String {
             "{raw}\n\n提示：这个站点要求登录。到「设置 → 从浏览器取 Cookie」选一个已登录该站的浏览器。"
         );
     }
-    if low.contains("private video") || low.contains("members-only") || low.contains("login required") {
+    if low.contains("private video")
+        || low.contains("members-only")
+        || low.contains("login required")
+    {
         return format!("{raw}\n\n提示：这是私有/会员内容，需要对应账号的 Cookie。");
     }
     if low.contains("http error 403") || low.contains("forbidden") {
@@ -826,7 +864,10 @@ pub fn friendly_error(raw: &str) -> String {
             "{raw}\n\n提示：站点返回了登录墙而不是视频页。换成已登录该站的浏览器 Cookie 再试；Facebook 这类站点对未登录请求一律这样回。"
         );
     }
-    if low.contains("geo restriction") || low.contains("not available in your country") || low.contains("geo-restricted") {
+    if low.contains("geo restriction")
+        || low.contains("not available in your country")
+        || low.contains("geo-restricted")
+    {
         return format!(
             "{raw}\n\n提示：地区限制。到「设置」填代理（如 http://127.0.0.1:7890）后再解析一次。"
         );
@@ -998,10 +1039,7 @@ fn fmt_selector(mode: &str, quality: &str, format_id: Option<&str>) -> Vec<Strin
             if q.is_empty() || q == "best" {
                 vec!["-f".into(), "bv*+ba/b".into()]
             } else {
-                vec![
-                    "-f".into(),
-                    format!("bv*[height<={q}]+ba/b[height<={q}]/b"),
-                ]
+                vec!["-f".into(), format!("bv*[height<={q}]+ba/b[height<={q}]/b")]
             }
         }
     }
@@ -1039,7 +1077,10 @@ pub fn build_args(o: &DownloadOpts) -> Vec<String> {
         "-P".into(),
         o.output_dir.display().to_string(),
         "-o".into(),
-        "%(title)s [%(id)s].%(ext)s".into(),
+        // 中文标题一个字 3 字节，长剧集标题 + 「 [id].f399.mp4.part」轻松超过 255 字节
+        // 的文件名上限，yt-dlp 会直接「File name too long」跳过整项（播放列表里表现为
+        // 项号飞涨但 0 字节）。用 .150B 按字节截断，且不会把多字节字符切一半。
+        "%(title).150B [%(id)s].%(ext)s".into(),
     ];
 
     // YouTube 的解签名离不开 JS 运行时，缺了它只会拿到 zero formats
@@ -1117,7 +1158,9 @@ fn sanitize_name(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t' => out.push(' '),
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t' => {
+                out.push(' ')
+            }
             _ => out.push(c),
         }
     }
@@ -1187,7 +1230,11 @@ fn cleanup_partial(base: &str) -> usize {
 /// 跑一次下载，逐行把事件喂给 sink。返回最终文件路径（拿不到则空串）。
 ///
 /// cancel 置位后杀子进程并返回 Err("已取消")。
-pub fn download_blocking<F>(o: &DownloadOpts, cancel: Arc<AtomicBool>, mut sink: F) -> Result<String, String>
+pub fn download_blocking<F>(
+    o: &DownloadOpts,
+    cancel: Arc<AtomicBool>,
+    mut sink: F,
+) -> Result<String, String>
 where
     F: FnMut(Event),
 {
@@ -1196,7 +1243,11 @@ where
     sink(Event::Log(format!(
         "命令：{} {}",
         kernel.path.display(),
-        args.iter().filter(|a| !a.starts_with("LYCO")).cloned().collect::<Vec<_>>().join(" ")
+        args.iter()
+            .filter(|a| !a.starts_with("LYCO"))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ")
     )));
 
     let mut cmd = Command::new(&kernel.path);
@@ -1220,6 +1271,10 @@ where
     let stderr = child.stderr.take().expect("stderr piped");
     let errbuf: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let eb = errbuf.clone();
+    // stderr 也接到同一条事件通道：播放列表里「某一项」失败不是致命错误，
+    // 以前只进 errbuf，UI 上完全看不到原因 —— 表现就是项号一直涨、字节数一直 0。
+    let (ltx, lrx) = std::sync::mpsc::channel::<String>();
+    let eltx = ltx.clone();
     let err_thread = std::thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
         let mut line = String::new();
@@ -1227,8 +1282,12 @@ where
             if n == 0 {
                 break;
             }
+            let t = line.trim_end().to_string();
+            if t.starts_with("ERROR:") || t.starts_with("WARNING:") {
+                let _ = eltx.send(format!("ERR|{t}"));
+            }
             if let Ok(mut buf) = eb.lock() {
-                buf.push(line.trim_end().to_string());
+                buf.push(t);
                 if buf.len() > 200 {
                     buf.remove(0);
                 }
@@ -1240,7 +1299,6 @@ where
     // 读 stdout 必须丢到独立线程：播放列表换项时 yt-dlp 会安静几十秒（在解析下一项），
     // 主线程如果直接阻塞在 read_line 上，就检查不到 cancel 标志 —— 实测取消能拖到两分钟。
     let stdout = child.stdout.take().expect("stdout piped");
-    let (ltx, lrx) = std::sync::mpsc::channel::<String>();
     let reader_thread = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
@@ -1325,12 +1383,17 @@ where
                 completed.push(p.to_string());
                 sink(Event::File(final_file.clone()));
             }
+        } else if let Some(rest) = t.strip_prefix("ERR|") {
+            // yt-dlp 的 ERROR/WARNING 原样进任务日志（播放列表单项失败常常只有这里有线索）
+            sink(Event::Log(rest.to_string()));
         } else if !t.is_empty() {
             sink(Event::Log(t.to_string()));
         }
     }
 
-    let status = child.wait().map_err(|e| format!("等待 yt-dlp 结束失败: {e}"))?;
+    let status = child
+        .wait()
+        .map_err(|e| format!("等待 yt-dlp 结束失败: {e}"))?;
     let _ = err_thread.join();
     // 取消的场合已经 kill_tree 过：此时管道写端可能还被祖孙进程短暂握着，
     // 硬等读线程会让「取消」看起来像卡住 —— 直接放手，让它自己收尾。
@@ -1359,10 +1422,7 @@ where
         // 播放列表 + --ignore-errors：yt-dlp 会因为「有项失败」返回非零，但只要真有成品落盘，
         // 这批就是部分成功。此时不该把整个任务判死，而要把失败项报出来让人知道。
         if o.playlist && !completed.is_empty() {
-            let skipped: Vec<String> = joined
-                .iter()
-                .map(|l| friendly_error(l))
-                .collect::<Vec<_>>();
+            let skipped: Vec<String> = joined.iter().map(|l| friendly_error(l)).collect::<Vec<_>>();
             if skipped.is_empty() {
                 sink(Event::Warn(format!(
                     "有部分条目未能下载，成功 {} 项",
@@ -1470,7 +1530,10 @@ pub async fn latest_version() -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("GitHub 返回 {}", resp.status()));
     }
-    let rel: Release = resp.json().await.map_err(|e| format!("解析 release 失败: {e}"))?;
+    let rel: Release = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析 release 失败: {e}"))?;
     Ok(rel.tag_name)
 }
 
@@ -1501,7 +1564,9 @@ pub async fn update() -> Result<(String, String, PathBuf), String> {
     // 先探一次上游版本，顺带确认网络与 GitHub API 可达
     let latest = latest_version().await?;
     // 已经是最新就别白拉 41 MB —— 除非用户明确要求强制重装
-    let force = std::env::var("LYCODL_KERNEL_FORCE").map(|v| v == "1").unwrap_or(false);
+    let force = std::env::var("LYCODL_KERNEL_FORCE")
+        .map(|v| v == "1")
+        .unwrap_or(false);
     if !force && current == latest && managed_exists() {
         let path = crate::paths::managed_ytdlp();
         return Ok((current.clone(), current, path));
@@ -1518,8 +1583,8 @@ pub async fn update() -> Result<(String, String, PathBuf), String> {
         .text()
         .await
         .map_err(|e| format!("读取校验和失败: {e}"))?;
-    let expected = expected_sha(&sums, asset)
-        .ok_or_else(|| format!("上游校验和清单里没有 {asset}"))?;
+    let expected =
+        expected_sha(&sums, asset).ok_or_else(|| format!("上游校验和清单里没有 {asset}"))?;
 
     let url = format!("{GITHUB_DL_PREFIX}/{asset}");
     let bytes = client
@@ -1553,8 +1618,7 @@ pub async fn update() -> Result<(String, String, PathBuf), String> {
             .map_err(|e| format!("设置可执行位失败: {e}"))?;
     }
     // 先验证新二进制真能跑，再原子替换（避免装上一个坏内核）
-    let new_version = version_of(&tmp)
-        .map_err(|e| format!("新内核无法执行，已放弃替换: {e}"))?;
+    let new_version = version_of(&tmp).map_err(|e| format!("新内核无法执行，已放弃替换: {e}"))?;
     std::fs::rename(&tmp, &dest).map_err(|e| format!("替换内核失败: {e}"))?;
 
     Ok((current, new_version, dest))

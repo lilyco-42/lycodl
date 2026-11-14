@@ -11,6 +11,7 @@ import {
   Server,
   ShieldCheck,
   Sparkles,
+  UploadCloud,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -46,6 +47,17 @@ function normalizeEndpoint(value: string): string | null {
 }
 const NO_IMP = "__none__";
 
+const PUBLISH_DESTS: string[] = ["quark", "bilibili", "douyin", "xhs", "kuaishou", "youtube", "x"];
+const PUBLISH_LABELS: Record<string, string> = {
+  quark: "夸克网盘",
+  bilibili: "B站",
+  douyin: "抖音",
+  xhs: "小红书",
+  kuaishou: "快手",
+  youtube: "YouTube",
+  x: "X / 推特",
+};
+
 const IMPERSONATE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "chrome", label: "chrome" },
   { value: "firefox", label: "firefox" },
@@ -73,6 +85,15 @@ export function SettingsPanel() {
   const [impersonate, setImpersonate] = useState<string>(NO_IMP);
   const [browserBridge, setBrowserBridge] = useState(false);
   const [flaresolverrEndpoint, setFlaresolverrEndpoint] = useState("");
+  const [autoPublish, setAutoPublish] = useState(true);
+  const [publishTargets, setPublishTargets] = useState<string[]>(PUBLISH_DESTS);
+  const [publishDriver, setPublishDriver] = useState("");
+  const [publishQuarkDir, setPublishQuarkDir] = useState("/06_待整理/lycodl-短剧集");
+  const [publishShareUrl, setPublishShareUrl] = useState("");
+  const [publishSharePasscode, setPublishSharePasscode] = useState("");
+  const [publishCdpUrl, setPublishCdpUrl] = useState("http://127.0.0.1:9333");
+  const [publishPlatformCommand, setPublishPlatformCommand] = useState("");
+  const [publishDryRun, setPublishDryRun] = useState(false);
 
   useEffect(() => {
     if (settings === null) {
@@ -85,6 +106,15 @@ export function SettingsPanel() {
     setImpersonate(settings.impersonate ?? NO_IMP);
     setBrowserBridge(settings.browserBridge ?? false);
     setFlaresolverrEndpoint(settings.flaresolverrEndpoint ?? "");
+    setAutoPublish(settings.autoPublish ?? true);
+    setPublishTargets(settings.publishTargets?.length ? settings.publishTargets : PUBLISH_DESTS);
+    setPublishDriver(settings.publishDriver ?? "");
+    setPublishQuarkDir(settings.publishQuarkDir ?? "/06_待整理/lycodl-短剧集");
+    setPublishShareUrl(settings.publishShareUrl ?? "");
+    setPublishSharePasscode(settings.publishSharePasscode ?? "");
+    setPublishCdpUrl(settings.publishCdpUrl ?? "http://127.0.0.1:9333");
+    setPublishPlatformCommand(settings.publishPlatformCommand ?? "");
+    setPublishDryRun(settings.publishDryRun ?? false);
   }, [settings]);
 
   async function handleSave() {
@@ -103,6 +133,15 @@ export function SettingsPanel() {
         impersonate: impersonate === NO_IMP ? null : impersonate,
         browserBridge,
         flaresolverrEndpoint: normalizeEndpoint(flaresolverrEndpoint),
+        autoPublish,
+        publishTargets,
+        publishDriver: publishDriver.trim(),
+        publishQuarkDir: publishQuarkDir.trim() || "/06_待整理/lycodl-短剧集",
+        publishShareUrl: publishShareUrl.trim() || null,
+        publishSharePasscode: publishSharePasscode.trim() || null,
+        publishCdpUrl: publishCdpUrl.trim() || "http://127.0.0.1:9333",
+        publishPlatformCommand: publishPlatformCommand.trim() || null,
+        publishDryRun,
       });
       const running = result.running ?? 0;
       if (parsedConcurrency < prevConcurrency && running > parsedConcurrency) {
@@ -273,9 +312,146 @@ export function SettingsPanel() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <UploadCloud className="size-4 text-muted-foreground" />
+            下载完自动发布
+          </CardTitle>
+          <CardDescription>
+            每个新成品只触发一次；成功过的「文件 × 目的地」会记入 ledger，不会重复外发。结果写进任务日志。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+            <div className="space-y-0.5">
+              <Label htmlFor="auto-publish" className="cursor-pointer">下完即发</Label>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                默认全开：夸克 + MultiPost 五个平台 + X 发网盘链接。关闭后只下载、不发布。
+              </p>
+            </div>
+            <Switch id="auto-publish" checked={autoPublish} onCheckedChange={setAutoPublish} />
+          </div>
+
+          <div className="space-y-2">
+            <Label>发布目的地</Label>
+            <div className="flex flex-wrap gap-2">
+              {PUBLISH_DESTS.map((dest) => (
+                <label key={dest} className="flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-xs">
+                  <Switch
+                    aria-label={PUBLISH_LABELS[dest]}
+                    checked={publishTargets.includes(dest)}
+                    onCheckedChange={(on) => setPublishTargets((prev) => on ? [...prev, dest] : prev.filter((x) => x !== dest))}
+                  />
+                  {PUBLISH_LABELS[dest]}
+                  <span className="font-mono text-[10px] text-muted-foreground">{dest}</span>
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              一个都不选会恢复为默认全开；夸克始终排在最前，X 最后发分享链接。
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="publish-quark-dir">夸克目标目录</Label>
+              <Input id="publish-quark-dir" value={publishQuarkDir} onChange={(e) => setPublishQuarkDir(e.target.value)} className="font-mono text-xs" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="publish-cdp-url">CDP 调试地址</Label>
+              <Input id="publish-cdp-url" value={publishCdpUrl} onChange={(e) => setPublishCdpUrl(e.target.value)} className="font-mono text-xs" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="publish-share-url">网盘分享链接</Label>
+              <Input id="publish-share-url" value={publishShareUrl} onChange={(e) => setPublishShareUrl(e.target.value)} placeholder="留空用默认永久链接" className="font-mono text-xs" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="publish-passcode">提取码</Label>
+              <Input id="publish-passcode" value={publishSharePasscode} onChange={(e) => setPublishSharePasscode(e.target.value)} placeholder="留空用默认提取码" className="font-mono text-xs" />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="publish-driver">发布 driver 命令</Label>
+            <Input id="publish-driver" value={publishDriver} onChange={(e) => setPublishDriver(e.target.value)} placeholder="留空使用内置 driver（data_dir/publish-driver.mjs）" className="font-mono text-xs" />
+            <p className="text-xs text-muted-foreground">用 sh -c 执行；stdin 收一条 JSON，stdout 每行回一个目的地结果。</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="publish-platform-command">平台提交命令（可选）</Label>
+            <Input id="publish-platform-command" value={publishPlatformCommand} onChange={(e) => setPublishPlatformCommand(e.target.value)} placeholder="留空则走 MultiPost 页面钩子" className="font-mono text-xs" />
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+            <div className="space-y-0.5">
+              <Label htmlFor="publish-dry-run" className="cursor-pointer">演练模式</Label>
+              <p className="text-xs text-muted-foreground">只写日志和 ledger，不上传夸克、不提交平台、不发 X；适合验证链路。</p>
+            </div>
+            <Switch id="publish-dry-run" checked={publishDryRun} onCheckedChange={setPublishDryRun} />
+          </div>
+
+          <PublishLedgerCard />
+
+          <div className="flex justify-end">
+            <Button onClick={() => void handleSave()} disabled={saving}>
+              {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
+              {saving ? "保存中…" : "保存自动发布设置"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <ExtensionCard />
 
       <YtDlpCard />
+    </div>
+  );
+}
+
+function PublishLedgerCard() {
+  const [entries, setEntries] = useState<import("@/lib/api").PublishLedgerEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.publishLedger(20);
+      setEntries(data.entries);
+    } catch (cause: unknown) {
+      setError(errorMessage(cause));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void refresh(); }, []);
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium">最近发布</p>
+        <Button variant="ghost" size="sm" onClick={() => void refresh()} disabled={loading}>
+          <RefreshCw className={loading ? "animate-spin" : ""} />
+          刷新
+        </Button>
+      </div>
+      {error !== null ? <ErrorAlert title="读取发布记录失败" message={error} /> : entries.length === 0 ? (
+        <p className="text-xs text-muted-foreground">还没有发布记录。</p>
+      ) : (
+        <div className="max-h-56 space-y-1 overflow-auto font-mono text-[11px]">
+          {entries.map((e, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2 border-b border-border/50 py-1 last:border-0">
+              <Badge variant={e.status === "ok" ? "default" : e.status === "failed" ? "destructive" : "secondary"}>{e.dest} · {e.status}</Badge>
+              <span className="min-w-0 flex-1 truncate">{e.file.split("/").pop()}</span>
+              <span className="shrink-0 text-muted-foreground">{new Date(e.at).toLocaleString()}</span>
+              <span className="w-full truncate text-muted-foreground">{e.detail}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -146,6 +146,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/publish/test", post(publish_test))
         .route("/api/publish/local", post(publish_local))
         .route("/api/publish/upload", post(publish_upload))
+        .route("/api/publish/all", post(publish_all))
         .route("/api/files", get(list_files))
         .route("/api/reveal", post(reveal))
         .route("/api/files/{name}", get(serve_file))
@@ -899,6 +900,95 @@ fn sse_data(job: &Job) -> SseEvent {
 }
 
 // ── 文件 ───────────────────────────────────────────────────────
+
+/// 扫描输出目录，返回可作为发布成品的普通文件（与 /api/files 同规则）。
+/// 批量发布只认这里的文件路径，不接受客户端任意 file 列表。
+fn publishable_files(s: &Settings) -> Result<Vec<(String, String, u64)>, String> {
+    let dir = settings::ensure_output_dir(s)?;
+    let mut files: Vec<(String, String, u64)> = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|e| format!("读取 {} 失败: {e}", dir.display()))?
+        .flatten()
+    {
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.')
+            || [".part", ".ytdl", ".temp"]
+                .iter()
+                .any(|x| name.ends_with(x))
+        {
+            continue;
+        }
+        let path = entry.path();
+        files.push((path.display().to_string(), name, meta.len()));
+    }
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(files)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishAllReq {
+    #[serde(default)]
+    targets: Vec<String>,
+    /// 默认演练；真发必须显式传 dryRun=false，且 riskAck 必须为 true。
+    #[serde(default)]
+    dry_run: Option<bool>,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    risk_ack: bool,
+}
+
+/// 文件页「全部发布」：服务端扫描输出目录并建一个批量任务。
+/// 每个文件发布前仍由内核按 ledger 去重，能力预检则在任务里逐文件执行。
+async fn publish_all(
+    State(st): State<AppState>,
+    Json(req): Json<PublishAllReq>,
+) -> Result<Json<Value>, ApiError> {
+    let s = st.snapshot();
+    let dry_run = req.dry_run.unwrap_or(true);
+    if !dry_run && !req.risk_ack {
+        return Err(ApiError::bad(
+            "关闭演练模式会向全部已选平台真实外发，请先确认风险（riskAck）",
+        ));
+    }
+    let targets = crate::publish::normalize_targets(if req.targets.is_empty() {
+        s.publish_targets.clone()
+    } else {
+        req.targets
+    });
+    let files = publishable_files(&s).map_err(ApiError::bad)?;
+    if files.is_empty() {
+        return Err(ApiError::bad("输出目录里没有可发布的成品文件"));
+    }
+    let file_count = files.len();
+    let response_targets = targets.clone();
+    let job_id = st
+        .store
+        .spawn_batch_publish(crate::jobs::NewBatchPublishJob {
+            files,
+            targets,
+            dry_run,
+            force: req.force,
+            settings: s,
+        })
+        .map_err(ApiError::bad)?;
+    Ok(Json(json!({
+        "ok": true,
+        "jobId": job_id,
+        "dryRun": dry_run,
+        "fileCount": file_count,
+        "targets": response_targets,
+        "filter": null,
+    })))
+}
 
 async fn list_files(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     let s = st.snapshot();

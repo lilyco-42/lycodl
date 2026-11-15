@@ -77,6 +77,17 @@ pub struct Job {
     /// 每个目的地的实时结论（手动发布任务写入，SSE 会带出去）
     #[serde(default)]
     pub publish_results: Vec<crate::publish::PublishResult>,
+    /// 批量发布：文件总数 / 已处理 / 成功 / 失败 / 跳过（旧任务反序列化为 0）
+    #[serde(default)]
+    pub batch_total: u32,
+    #[serde(default)]
+    pub batch_processed: u32,
+    #[serde(default)]
+    pub batch_succeeded: u32,
+    #[serde(default)]
+    pub batch_failed: u32,
+    #[serde(default)]
+    pub batch_skipped: u32,
 }
 
 fn now_ms() -> u64 {
@@ -110,6 +121,54 @@ impl Drop for SlotGuard {
     }
 }
 
+/// 批量任务里把成品路径规范化，保证探针、driver、ledger 用的是同一个路径。
+fn canonical_batch_file(raw: &str) -> Result<(String, String, u64), String> {
+    let p = PathBuf::from(raw.trim());
+    if !p.is_file() {
+        return Err(format!("文件不存在或已不是普通文件: {}", raw.trim()));
+    }
+    let p = std::fs::canonicalize(&p).unwrap_or(p);
+    let file = p.display().to_string();
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+    Ok((file, name, size))
+}
+
+/// 每处理完一个文件就刷新批量任务的计数与百分比。
+#[allow(clippy::too_many_arguments)]
+fn bump_batch_counts(
+    store: &Arc<JobStore>,
+    jid: &str,
+    total: usize,
+    processed: &mut u32,
+    succeeded: &mut u32,
+    failed: &mut u32,
+    skipped: &mut u32,
+    outcome: &str,
+) {
+    match outcome {
+        "ok" => *succeeded += 1,
+        "failed" => *failed += 1,
+        _ => *skipped += 1,
+    }
+    *processed += 1;
+    let p = *processed;
+    let s = *succeeded;
+    let f = *failed;
+    let k = *skipped;
+    let pct = (p as f64 / total.max(1) as f64 * 100.0).min(100.0);
+    store.update(jid, move |j| {
+        j.batch_processed = p;
+        j.batch_succeeded = s;
+        j.batch_failed = f;
+        j.batch_skipped = k;
+        j.percent = pct;
+    });
+}
+
 pub struct NewJob {
     pub url: String,
     pub mode: String,
@@ -136,6 +195,16 @@ pub struct NewPublishJob {
     pub filter_notes: Vec<String>,
     /// local / upload / one-click，写进 ledger 便于追溯来源
     pub source: String,
+    pub settings: crate::settings::Settings,
+}
+
+/// 文件页「全部发布」：服务端扫描出来的成品，逐文件重新预检与去重。
+pub struct NewBatchPublishJob {
+    /// (扫描时路径, 文件名, 扫描时大小)；执行时会重新 canonicalize 和取大小
+    pub files: Vec<(String, String, u64)>,
+    pub targets: Vec<String>,
+    pub dry_run: bool,
+    pub force: bool,
     pub settings: crate::settings::Settings,
 }
 
@@ -343,8 +412,8 @@ impl JobStore {
     /// 用户不用回去重新解析一遍 —— 网络抖一下就得重填 URL 太难受了。
     pub fn respawn(self: &Arc<Self>, id: &str) -> Result<String, String> {
         let old = self.get(id).ok_or_else(|| format!("任务不存在: {id}"))?;
-        if old.job_kind == "publish" {
-            return Err("手动发布任务请在「发布」页重新提交，避免误重复外发".into());
+        if old.job_kind == "publish" || old.job_kind == "batch-publish" {
+            return Err("发布任务请在「文件」或「发布」页重新提交，避免误重复外发".into());
         }
         if old.status.is_active() {
             return Err("任务还在进行中，不需要重试".into());
@@ -394,6 +463,11 @@ impl JobStore {
             job_kind: "download".into(),
             publish_targets: Vec::new(),
             publish_results: Vec::new(),
+            batch_total: 0,
+            batch_processed: 0,
+            batch_succeeded: 0,
+            batch_failed: 0,
+            batch_skipped: 0,
         };
         if let Ok(mut m) = self.inner.lock() {
             m.insert(id.clone(), job.clone());
@@ -684,6 +758,11 @@ impl JobStore {
             job_kind: "publish".into(),
             publish_targets: targets.clone(),
             publish_results: Vec::new(),
+            batch_total: 0,
+            batch_processed: 0,
+            batch_succeeded: 0,
+            batch_failed: 0,
+            batch_skipped: 0,
         };
         if let Ok(mut m) = self.inner.lock() {
             m.insert(id.clone(), job.clone());
@@ -778,6 +857,274 @@ impl JobStore {
                     "手动发布任务完成".into()
                 },
             );
+            if let Ok(mut m) = store.cancel.lock() {
+                m.remove(&jid);
+            }
+            store.prune();
+        });
+
+        Ok(id)
+    }
+
+    /// 文件页「全部发布」：建一个批处理任务，逐个成品重新预检 + ledger 去重后发布。
+    ///
+    /// 安全底线：绝不信任前端筛过的列表，每个文件发布前仍由内核
+    /// 运行只读能力探针（跳过不可用 / 账号已发布），并由 ledger 兜底去重。
+    /// 默认演练（dry_run=true），真发必须由调用方显式传 dry_run=false。
+    pub fn spawn_batch_publish(
+        self: &Arc<Self>,
+        req: NewBatchPublishJob,
+    ) -> Result<String, String> {
+        let targets = crate::publish::normalize_targets(req.targets);
+        if targets.is_empty() {
+            return Err("没有可发布的目的地".into());
+        }
+        let total = req.files.len();
+        if total == 0 {
+            return Err("没有可发布的成品文件".into());
+        }
+        let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("batch-{}-{}", now_ms(), n);
+        let job = Job {
+            id: id.clone(),
+            url: "全部发布".into(),
+            title: format!("全部发布（{} 个文件）", total),
+            mode: "batch-publish".into(),
+            quality: String::new(),
+            format_id: None,
+            playlist: false,
+            direct: None,
+            direct_title: None,
+            status: Status::Queued,
+            percent: 0.0,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            speed: None,
+            eta: None,
+            output: None,
+            file_name: None,
+            error: None,
+            playlist_index: None,
+            playlist_count: None,
+            warnings: Vec::new(),
+            created_at: now_ms(),
+            ended_at: None,
+            job_kind: "batch-publish".into(),
+            publish_targets: targets.clone(),
+            publish_results: Vec::new(),
+            batch_total: total as u32,
+            batch_processed: 0,
+            batch_succeeded: 0,
+            batch_failed: 0,
+            batch_skipped: 0,
+        };
+        if let Ok(mut m) = self.inner.lock() {
+            m.insert(id.clone(), job.clone());
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut m) = self.cancel.lock() {
+            m.insert(id.clone(), flag.clone());
+        }
+        self.broadcast(&id);
+        self.push_log(
+            &id,
+            format!(
+                "批量发布任务已创建：{} 个文件，目标 {}",
+                total,
+                targets.join(" / ")
+            ),
+        );
+
+        let store = self.clone();
+        let jid = id.clone();
+        let files = req.files;
+        let settings = req.settings;
+        let dry_run = req.dry_run;
+        let force = req.force;
+        tokio::spawn(async move {
+            store.acquire_slot().await;
+            let _guard = SlotGuard(store.clone());
+            let cancelled = flag.load(Ordering::SeqCst)
+                || matches!(store.get(&jid).map(|j| j.status), Some(Status::Cancelled));
+            if cancelled {
+                store.push_log(&jid, "批量发布任务已取消，未开始发布".into());
+                store.update(&jid, |j| {
+                    j.status = Status::Cancelled;
+                    j.ended_at = Some(now_ms());
+                });
+                if let Ok(mut m) = store.cancel.lock() {
+                    m.remove(&jid);
+                }
+                store.prune();
+                return;
+            }
+            store.update(&jid, |j| j.status = Status::Running);
+            let mut succeeded: u32 = 0;
+            let mut failed: u32 = 0;
+            let mut skipped: u32 = 0;
+            let mut processed: u32 = 0;
+            for (raw, scan_name, scan_size) in &files {
+                if flag.load(Ordering::SeqCst) {
+                    store.push_log(
+                        &jid,
+                        format!("批量发布任务已取消（已处理 {} / {}）", processed, total),
+                    );
+                    store.update(&jid, |j| {
+                        j.status = Status::Cancelled;
+                        j.ended_at = Some(now_ms());
+                    });
+                    if let Ok(mut m) = store.cancel.lock() {
+                        m.remove(&jid);
+                    }
+                    store.prune();
+                    return;
+                }
+                let (file, file_name, size) = match canonical_batch_file(raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        store.push_log(&jid, format!("跳过 {}：{}", scan_name, e));
+                        bump_batch_counts(
+                            &store,
+                            &jid,
+                            total,
+                            &mut processed,
+                            &mut succeeded,
+                            &mut failed,
+                            &mut skipped,
+                            "failed",
+                        );
+                        continue;
+                    }
+                };
+                if *scan_size != size {
+                    store.push_log(
+                        &jid,
+                        format!("{}：文件大小已变化，按当前大小重新处理", file_name),
+                    );
+                }
+                // 逐文件只读预检：跳过不可用 / 账号已发布目的地，避免误真发。
+                let probe = match crate::publish_caps::probe(&file, targets.clone(), &settings)
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        store.push_log(&jid, format!("筛选 {} 失败：{}；跳过该文件", file_name, e));
+                        bump_batch_counts(
+                            &store,
+                            &jid,
+                            total,
+                            &mut processed,
+                            &mut succeeded,
+                            &mut failed,
+                            &mut skipped,
+                            "failed",
+                        );
+                        continue;
+                    }
+                };
+                for e2 in &probe.errors {
+                    store.push_log(&jid, format!("[{}] 预检提示：{}", file_name, e2));
+                }
+                let selectable = probe.selectable(force);
+                if selectable.is_empty() {
+                    store.push_log(
+                        &jid,
+                        format!("跳过 {}：所有目的地均不可用或已发布", file_name),
+                    );
+                    bump_batch_counts(
+                        &store,
+                        &jid,
+                        total,
+                        &mut processed,
+                        &mut succeeded,
+                        &mut failed,
+                        &mut skipped,
+                        "skipped",
+                    );
+                    continue;
+                }
+                for line in probe.log_lines(force) {
+                    store.push_log(&jid, format!("[{}] {}", file_name, line));
+                }
+                let o = crate::publish::PublishOptions {
+                    targets: Some(selectable),
+                    dry_run: Some(dry_run),
+                    force,
+                    task_id: Some(jid.clone()),
+                    source: "batch".into(),
+                    label: "批量发布".into(),
+                };
+                let log_name = file_name.clone();
+                let logger = store.clone();
+                let lid = jid.clone();
+                let pstore = store.clone();
+                let pid = jid.clone();
+                let results = crate::publish::publish_one_with_progress(
+                    file,
+                    file_name.clone(),
+                    file_name.clone(),
+                    size,
+                    settings.clone(),
+                    o,
+                    move |line| logger.push_log(&lid, format!("[{}] {}", log_name, line)),
+                    move |r| {
+                        pstore.update(&pid, |j| {
+                            j.publish_results.push(r);
+                            if j.publish_results.len() > 50 {
+                                j.publish_results.remove(0);
+                            }
+                        });
+                    },
+                )
+                .await;
+                if results.is_empty() {
+                    bump_batch_counts(
+                        &store,
+                        &jid,
+                        total,
+                        &mut processed,
+                        &mut succeeded,
+                        &mut failed,
+                        &mut skipped,
+                        "skipped",
+                    );
+                } else {
+                    let bad = results
+                        .iter()
+                        .any(|r| r.status != "ok" && r.status != "dry-run");
+                    bump_batch_counts(
+                        &store,
+                        &jid,
+                        total,
+                        &mut processed,
+                        &mut succeeded,
+                        &mut failed,
+                        &mut skipped,
+                        if bad { "failed" } else { "ok" },
+                    );
+                }
+            }
+            let s = succeeded;
+            let f = failed;
+            let k = skipped;
+            let p = processed;
+            store.push_log(
+                &jid,
+                format!(
+                    "批量发布结束：{} 个文件已处理，成功 {} / 失败 {} / 跳过 {}",
+                    p, s, f, k
+                ),
+            );
+            store.update(&jid, |j| {
+                j.status = if f > 0 { Status::Failed } else { Status::Done };
+                j.percent = 100.0;
+                j.error = if f > 0 {
+                    Some(format!("{} 个文件发布失败", f))
+                } else {
+                    None
+                };
+                j.ended_at = Some(now_ms());
+            });
             if let Ok(mut m) = store.cancel.lock() {
                 m.remove(&jid);
             }

@@ -62,6 +62,9 @@ pub struct PublishResult {
     pub url: Option<String>,
     #[serde(default)]
     pub at: u64,
+    /// 批量发布时标记这一条属于哪个成品（普通任务为空）
+    #[serde(default)]
+    pub file_name: String,
 }
 
 impl PublishResult {
@@ -90,7 +93,7 @@ pub struct LedgerEntry {
     /// 手动发布任务 id（自动发布沿用下载任务 id；测试入口为 null）
     #[serde(default)]
     pub task_id: Option<String>,
-    /// auto / local / upload / test
+    /// auto / local / upload / one-click / batch / test
     #[serde(default)]
     pub source: String,
 }
@@ -191,7 +194,7 @@ pub struct PublishOptions {
     /// 忽略 ledger 已成功记录，按勾选目的地重发（可能重复外发）
     pub force: bool,
     pub task_id: Option<String>,
-    /// auto / local / upload / test
+    /// auto / local / upload / one-click / batch / test
     pub source: String,
     /// 写进日志的动作名
     pub label: String,
@@ -237,6 +240,7 @@ fn record_result<F, R>(
     file: &str,
     size: u64,
     dry_run: bool,
+    file_name: &str,
     o: &PublishOptions,
     log: &mut F,
     on_result: &mut R,
@@ -246,6 +250,9 @@ fn record_result<F, R>(
     R: FnMut(PublishResult),
 {
     r.at = now_ms();
+    if r.file_name.trim().is_empty() {
+        r.file_name = file_name.to_string();
+    }
     log(format!(
         "发布 {}：{}（{}）",
         r.dest,
@@ -275,6 +282,7 @@ fn driver_error(detail: impl Into<String>) -> PublishResult {
         detail: detail.into(),
         url: None,
         at: 0,
+        file_name: String::new(),
     }
 }
 
@@ -399,6 +407,7 @@ where
                 &file,
                 size,
                 dry_run,
+                &file_name,
                 &o,
                 &mut log,
                 &mut on_result,
@@ -436,6 +445,7 @@ where
                         &file,
                         size,
                         dry_run,
+                        &file_name,
                         &o,
                         &mut log,
                         &mut on_result,
@@ -467,6 +477,7 @@ where
                 &file,
                 size,
                 dry_run,
+                &file_name,
                 &o,
                 &mut log,
                 &mut on_result,
@@ -486,6 +497,7 @@ where
             &file,
             size,
             dry_run,
+            &file_name,
             &o,
             &mut log,
             &mut on_result,

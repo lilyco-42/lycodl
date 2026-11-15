@@ -1,10 +1,20 @@
 import { useState } from "react";
-import { Download, FolderOpen, LoaderCircle, RefreshCw, Send, WandSparkles } from "lucide-react";
+import { Download, FolderOpen, Layers3, LoaderCircle, RefreshCw, Send, WandSparkles } from "lucide-react";
 import { toast } from "sonner";
 import { api, errorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -33,6 +43,10 @@ export function FilesPanel({
   const [refreshing, setRefreshing] = useState(false);
   const [revealing, setRevealing] = useState<string | null>(null);
   const [oneClicking, setOneClicking] = useState<string | null>(null);
+  const [publishAllOpen, setPublishAllOpen] = useState(false);
+  const [publishAllDryRun, setPublishAllDryRun] = useState(true);
+  const [publishAllRiskAck, setPublishAllRiskAck] = useState(false);
+  const [publishAllBusy, setPublishAllBusy] = useState(false);
 
   async function handleReveal(name: string) {
     const dir = settings?.outputDir ?? "";
@@ -97,6 +111,40 @@ export function FilesPanel({
     }
   }
 
+  /** 顶部「全部发布」：默认演练，真发需关闭演练并再次勾选风险确认。 */
+  async function handlePublishAll() {
+    const selected = settings?.publishTargets ?? [];
+    if (selected.length === 0) {
+      toast.error("还没有选择发布目的地");
+      return;
+    }
+    if (!publishAllDryRun && !publishAllRiskAck) {
+      toast.error("请先勾选真实外发风险确认");
+      return;
+    }
+    setPublishAllBusy(true);
+    try {
+      const result = await api.publishAll({
+        targets: selected,
+        dryRun: publishAllDryRun,
+        force: false,
+        riskAck: !publishAllDryRun,
+      });
+      const mode = publishAllDryRun ? "演练，不会外发" : "真实外发已启用";
+      toast.success("全部发布任务已创建", {
+        description: "任务 ID：" + result.jobId + "；" + result.fileCount + " 个文件；" + mode,
+      });
+      setPublishAllOpen(false);
+      setPublishAllRiskAck(false);
+      setPublishAllDryRun(true);
+      onTaskCreated?.();
+    } catch (cause: unknown) {
+      toast.error("创建全部发布任务失败", { description: errorMessage(cause) });
+    } finally {
+      setPublishAllBusy(false);
+    }
+  }
+
   async function handleRefresh() {
     setRefreshing(true);
     const ok = await refresh();
@@ -116,12 +164,85 @@ export function FilesPanel({
           </CardTitle>
           <CardDescription>下载完成的文件会保存在后端配置的输出目录中。</CardDescription>
         </div>
-        <Button variant="outline" size="sm" onClick={() => void handleRefresh()} disabled={refreshing}>
-          {refreshing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
-          刷新
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button id="publish-all" onClick={() => setPublishAllOpen(true)} disabled={files.length === 0}>
+            <Layers3 />
+            全部发布
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void handleRefresh()} disabled={refreshing}>
+            {refreshing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+            刷新
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
+        <Dialog open={publishAllOpen} onOpenChange={(open) => {
+          setPublishAllOpen(open);
+          if (!open) {
+            setPublishAllRiskAck(false);
+            setPublishAllDryRun(true);
+          }
+        }}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>全部发布（{files.length} 个文件）</DialogTitle>
+              <DialogDescription>
+                后端会重新扫描输出目录，并在每个文件发布前重新做只读能力预检与发布台账去重。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+              <div className="rounded-lg border border-border bg-muted/30 p-3">
+                当前目的地：{(settings?.publishTargets ?? []).join(" / ") || "尚未读取"}
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+                <div className="space-y-1">
+                  <Label htmlFor="publish-all-dry-run">演练模式</Label>
+                  <p className="text-xs text-muted-foreground">开启时只记录将要发布到哪些目的地，不上传、不发帖。</p>
+                </div>
+                <Switch
+                  id="publish-all-dry-run"
+                  checked={publishAllDryRun}
+                  onCheckedChange={setPublishAllDryRun}
+                  disabled={publishAllBusy}
+                />
+              </div>
+              {!publishAllDryRun ? (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="publish-all-risk-ack">确认真实外发</Label>
+                    <p className="text-xs text-muted-foreground">
+                      将对输出目录内全部成品向已选平台真实发布；台账已成功的会自动跳过。
+                    </p>
+                  </div>
+                  <Switch
+                    id="publish-all-risk-ack"
+                    checked={publishAllRiskAck}
+                    onCheckedChange={setPublishAllRiskAck}
+                    disabled={publishAllBusy}
+                  />
+                </div>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => { setPublishAllOpen(false); setPublishAllRiskAck(false); setPublishAllDryRun(true); }}
+                disabled={publishAllBusy}
+              >
+                取消
+              </Button>
+              <Button
+                id="publish-all-confirm"
+                variant={publishAllDryRun ? "default" : "destructive"}
+                onClick={() => void handlePublishAll()}
+                disabled={publishAllBusy || (!publishAllDryRun && !publishAllRiskAck)}
+              >
+                {publishAllBusy ? <LoaderCircle className="animate-spin" /> : <Layers3 />}
+                {publishAllBusy ? "创建中…" : publishAllDryRun ? "开始演练" : "确认真实发布"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         {error !== null ? <ErrorAlert title="获取文件列表失败" message={error} /> : null}
 
         {loading && files.length === 0 ? (

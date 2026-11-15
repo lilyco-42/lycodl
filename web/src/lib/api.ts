@@ -49,7 +49,7 @@ export interface PublishLedgerEntry {
   dryRun: boolean;
   /** 手动发布任务 id；自动发布沿用下载任务 id，测试入口为 null */
   taskId?: string | null;
-  /** auto / local / upload / test */
+  /** auto / local / upload / one-click / batch / test */
   source?: string;
 }
 
@@ -69,6 +69,8 @@ export interface PublishResult {
   detail: string;
   url: string | null;
   at: number;
+  /** 批量发布：结果所属的成品文件名；普通任务可为空 */
+  fileName?: string;
 }
 
 /** 发布前只读预检：可用接口 / 登录态 / 我的账号已发布状态 */
@@ -110,6 +112,14 @@ export interface PublishTaskResponse {
   file: string;
   size?: number;
   filter?: PublishProbeResponse | null;
+}
+
+export interface PublishBatchResponse {
+  ok: true;
+  jobId: string;
+  dryRun: boolean;
+  fileCount: number;
+  targets: string[];
 }
 
 export interface SettingsResponse {
@@ -259,10 +269,16 @@ export interface Job {
   warnings: string[];
   createdAt: number;
   endedAt: number | null;
-  /** 以下三项由手动发布任务返回；旧后端可能没有 */
+  /** 以下三项由发布任务返回；旧后端可能没有 */
   jobKind?: string;
   publishTargets?: string[];
   publishResults?: PublishResult[];
+  /** 批量发布计数；旧任务 / 普通任务可没有 */
+  batchTotal?: number;
+  batchProcessed?: number;
+  batchSucceeded?: number;
+  batchFailed?: number;
+  batchSkipped?: number;
 }
 
 export interface JobsResponse {
@@ -469,6 +485,18 @@ export const api = {
     request<PublishTestResponse>("/api/publish/test", {
       method: "POST",
       body: JSON.stringify({ file, ...options }),
+    }),
+
+  /** 文件页「全部发布」：后端扫描输出目录，逐文件预检与去重后建一个批处理任务 */
+  publishAll: (payload: {
+    targets?: string[];
+    dryRun: boolean;
+    force?: boolean;
+    riskAck?: boolean;
+  }) =>
+    request<PublishBatchResponse>("/api/publish/all", {
+      method: "POST",
+      body: JSON.stringify(payload),
     }),
 
   /** 对运行 lycodl 的本机已有路径建一个发布任务 */

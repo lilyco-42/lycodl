@@ -49,6 +49,7 @@ const MODE_LABEL: Record<string, string> = {
   audio: "音频",
   custom: "自定义格式",
   publish: "文件发布",
+  "batch-publish": "全部发布",
 };
 
 function isActive(job: Job): boolean {
@@ -208,7 +209,8 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
   const StatusIcon = meta.icon;
   const percent = clampPercent(job.percent);
   const active = isActive(job);
-  const publishJob = job.jobKind === "publish";
+  const publishJob = job.jobKind === "publish" || job.jobKind === "batch-publish";
+  const batchJob = job.jobKind === "batch-publish";
   const statusLabel = publishJob
     ? job.status === "queued"
       ? "等待发布"
@@ -222,6 +224,11 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
     : meta.label;
   const resultCount = job.publishResults?.length ?? 0;
   const targetCount = Math.max(1, job.publishTargets?.length ?? 0);
+  const batchTotal = job.batchTotal ?? 0;
+  const batchProcessed = job.batchProcessed ?? 0;
+  const batchSucceeded = job.batchSucceeded ?? 0;
+  const batchFailed = job.batchFailed ?? 0;
+  const batchSkipped = job.batchSkipped ?? 0;
 
   return (
     <Card>
@@ -256,10 +263,20 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
               <>
                 <span className="inline-flex items-center gap-1">
                   <Files className="size-3" />
-                  文件发布任务
+                  {batchJob ? "全部发布任务" : "文件发布任务"}
                 </span>
-                <span>{resultCount} / {targetCount} 个目的地</span>
-                <span>已记录结果 {resultCount} 条</span>
+                {batchJob ? (
+                  <>
+                    <span>{batchProcessed} / {batchTotal} 个文件</span>
+                    <span>成功 {batchSucceeded} · 失败 {batchFailed} · 跳过 {batchSkipped}</span>
+                    <span>最近结果 {resultCount} 条</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{resultCount} / {targetCount} 个目的地</span>
+                    <span>已记录结果 {resultCount} 条</span>
+                  </>
+                )}
                 <span className="font-medium text-foreground">{percent.toFixed(1)}%</span>
               </>
             ) : (
@@ -293,6 +310,9 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
                     <Badge variant={resultMeta.variant}>
                       {PUBLISH_LABELS[r.dest] ?? r.dest} · {resultMeta.label}
                     </Badge>
+                    {batchJob && r.fileName ? (
+                      <span className="min-w-0 truncate text-muted-foreground" title={r.fileName}>{r.fileName}</span>
+                    ) : null}
                     {r.url !== null && r.url !== "" ? (
                       <a className="text-primary underline underline-offset-2" href={r.url ?? ""} target="_blank" rel="noreferrer">
                         打开链接
@@ -307,7 +327,11 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
         ) : null}
 
         {publishJob && active ? (
-          <p className="text-xs text-muted-foreground">发布任务开始后不支持中途取消；每个目的地的结果会实时出现在这里并写入任务日志。</p>
+          <p className="text-xs text-muted-foreground">
+            {batchJob
+              ? "批量任务支持停止后续文件：当前文件发布完成后不会继续处理剩余文件；每个目的地的结果会实时出现在这里并写入任务日志。"
+              : "发布任务开始后不支持中途取消；每个目的地的结果会实时出现在这里并写入任务日志。"}
+          </p>
         ) : null}
 
         {job.warnings.length > 0 ? (
@@ -344,13 +368,13 @@ function JobCard({ job, cancelling, retrying, onCancel, onReveal, onRetry }: Job
               {retrying ? "重试中…" : "重试"}
             </Button>
           ) : null}
-          {active && !publishJob ? (
+          {active && (!publishJob || batchJob) ? (
             <Button variant="destructive" size="sm" onClick={onCancel} disabled={cancelling}>
               {cancelling ? <LoaderCircle className="animate-spin" /> : <Ban />}
-              {cancelling ? "取消中…" : "取消"}
+              {cancelling ? "取消中…" : batchJob ? "停止后续" : "取消"}
             </Button>
           ) : null}
-          {job.status === "done" ? (
+          {job.status === "done" && !batchJob ? (
             <Button variant="outline" size="sm" onClick={onReveal}>
               <FolderOpen />
               打开位置

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="lycodl">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111c2e"/>
+      <stop offset="0.5" stop-color="#0b1322"/>
+      <stop offset="1" stop-color="#050a12"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#7ff0ff"/>
+      <stop offset="0.45" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#7c86ff"/>
+    </linearGradient>
+    <radialGradient id="aura" cx="0.5" cy="0.46" r="0.52">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="#7ff0ff" stroke-opacity="0.16" stroke-width="6"/>
+  <circle cx="256" cy="238" r="196" fill="url(#aura)"/>
+  <g fill="none" stroke="url(#stroke)" stroke-width="17" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M256 96 L394 178 L256 260 L118 178 Z" opacity="0.95"/>
+    <path d="M118 178 V306 L256 388 L394 306 V178" opacity="0.42"/>
+  </g>
+  <path d="M256 132 L318 168 L256 204 L194 168 Z" fill="url(#stroke)" opacity="0.5"/>
+  <path d="M234 232 h44 v52 h46 l-68 74 -68-74 h46 z" fill="url(#stroke)"/>
+</svg>

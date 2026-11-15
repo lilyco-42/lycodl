@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=lycodl
+Name[zh_CN]=lycodl 视频下载器
+Comment=多平台视频下载器（yt-dlp 内核 + Web 控制台）
+TryExec=@LAUNCHER@
+Exec=@LAUNCHER@
+Icon=lycodl
+Terminal=false
+Categories=AudioVideo;
+Keywords=download;video;youtube;bilibili;yt-dlp;

@@ -524,11 +524,12 @@ fn query_targets(q: &HashMap<String, String>) -> Option<Vec<String>> {
 }
 
 fn query_bool(q: &HashMap<String, String>, key: &str) -> Option<bool> {
-    q.get(key).and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    })
+    q.get(key)
+        .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
 }
 
 /// 发布前只读筛选：返回每个目的地的可用性、账号已发布状态与可发布列表。
@@ -585,7 +586,11 @@ async fn filtered_publish_plan(
                 format!(
                     "{}={}",
                     c.dest,
-                    if !c.available { "不可用" } else { "已发布" }
+                    if !c.available {
+                        "不可用"
+                    } else {
+                        "已发布"
+                    }
                 )
             })
             .collect::<Vec<_>>()
@@ -671,7 +676,10 @@ fn safe_upload_name(raw: &str) -> Result<String, String> {
         return Err("文件名非法：不能以 . 开头".into());
     }
     let lower = name.to_ascii_lowercase();
-    if [".part", ".ytdl", ".temp"].iter().any(|x| lower.ends_with(x)) {
+    if [".part", ".ytdl", ".temp"]
+        .iter()
+        .any(|x| lower.ends_with(x))
+    {
         return Err("临时文件不能发布".into());
     }
     let clean = StdPath::new(name)
@@ -713,11 +721,15 @@ async fn publish_upload(
     Query(q): Query<HashMap<String, String>>,
     body: Body,
 ) -> Result<Json<Value>, ApiError> {
-    let name = safe_upload_name(q.get("name").map(|s| s.as_str()).unwrap_or(""))
-        .map_err(ApiError::bad)?;
+    let name =
+        safe_upload_name(q.get("name").map(|s| s.as_str()).unwrap_or("")).map_err(ApiError::bad)?;
     let s = st.snapshot();
     let dir = settings::ensure_output_dir(&s).map_err(ApiError::bad)?;
-    let temp = dir.join(format!(".lycodl-upload-{}-{}.part", now_ms(), std::process::id()));
+    let temp = dir.join(format!(
+        ".lycodl-upload-{}-{}.part",
+        now_ms(),
+        std::process::id()
+    ));
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -758,7 +770,7 @@ async fn publish_upload(
         ApiError::internal(format!("保存上传文件失败: {e}"))
     })?;
     let path = dest.display().to_string();
-    let targets = query_targets(&q).unwrap_or_else(Vec::new);
+    let targets = query_targets(&q).unwrap_or_default();
     let dry_run = query_bool(&q, "dryRun").unwrap_or(s.publish_dry_run);
     let force = query_bool(&q, "force").unwrap_or(false);
     let filter = query_bool(&q, "filter").unwrap_or(false);
@@ -830,16 +842,9 @@ async fn publish_test(
         source: "test".into(),
         label: "测试发布".into(),
     };
-    let results = crate::publish::publish_one_with(
-        file.clone(),
-        fname.clone(),
-        fname,
-        size,
-        s,
-        o,
-        |_| {},
-    )
-    .await;
+    let results =
+        crate::publish::publish_one_with(file.clone(), fname.clone(), fname, size, s, o, |_| {})
+            .await;
     Ok(Json(
         json!({ "ok": true, "file": file, "results": results }),
     ))

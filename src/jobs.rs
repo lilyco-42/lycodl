@@ -669,7 +669,11 @@ impl JobStore {
             total_bytes: Some(size as i64),
             speed: None,
             eta: None,
-            output: if parent.is_empty() { None } else { Some(parent) },
+            output: if parent.is_empty() {
+                None
+            } else {
+                Some(parent)
+            },
             file_name: Some(file_name.clone()),
             error: None,
             playlist_index: None,
@@ -734,8 +738,8 @@ impl JobStore {
                     progress_store.update(&progress_id, |j| {
                         j.publish_results.push(r);
                         let total = j.publish_targets.len().max(1);
-                        j.percent = ((j.publish_results.len() as f64 / total as f64) * 100.0)
-                            .min(100.0);
+                        j.percent =
+                            ((j.publish_results.len() as f64 / total as f64) * 100.0).min(100.0);
                     });
                 },
             )

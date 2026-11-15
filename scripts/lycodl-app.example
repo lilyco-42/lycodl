@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# one app, one action: ensure the single lycodl.service switch is on, then open its Web UI.
+set -euo pipefail
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+URL="${LYCODL_URL:-@URL@}"
+if ! systemctl --user is-active --quiet lycodl.service; then
+  systemctl --user start lycodl.service
+fi
+for _ in {1..40}; do
+  if curl -fsS --max-time 1 "$URL/api/health" 2>/dev/null | grep -q '"name":"lycodl"'; then
+    exec xdg-open "$URL"
+  fi
+  sleep 0.5
+done
+echo "lycodl 启动超时：$URL/api/health 未就绪" >&2
+exit 1

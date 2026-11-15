@@ -58,8 +58,12 @@ impl PublishProbe {
         for dest in order {
             let cap = self.caps.iter().find(|c| c.dest == dest);
             let Some(cap) = cap else { continue };
-            if !cap.available { continue }
-            if !force && cap.published { continue }
+            if !cap.available {
+                continue;
+            }
+            if !force && cap.published {
+                continue;
+            }
             out.push(dest.to_string());
         }
         out
@@ -152,7 +156,11 @@ fn canonical_file(raw: &str) -> Result<(String, String, u64), String> {
 
 /// 调只读 Node 探针，然后合并本机 ledger 的「已成功发布」记录。
 /// 探针挂掉也要返回结构，让 UI 明确显示 unavailable，而不是悄悄真发。
-pub async fn probe(file_raw: &str, targets: Vec<String>, s: &Settings) -> Result<PublishProbe, String> {
+pub async fn probe(
+    file_raw: &str,
+    targets: Vec<String>,
+    s: &Settings,
+) -> Result<PublishProbe, String> {
     let (file, file_name, size) = canonical_file(file_raw)?;
     let wanted = crate::publish::normalize_targets(targets);
     let script = probe_script();
@@ -192,7 +200,9 @@ pub async fn probe(file_raw: &str, targets: Vec<String>, s: &Settings) -> Result
                 let _ = stdin.write_all(payload.to_string().as_bytes()).await;
                 drop(stdin);
             }
-            match tokio::time::timeout(std::time::Duration::from_secs(25), child.wait_with_output()).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(25), child.wait_with_output())
+                .await
+            {
                 Ok(Ok(o)) => {
                     exit_code = o.status.code();
                     stdout = o.stdout;
@@ -219,7 +229,11 @@ pub async fn probe(file_raw: &str, targets: Vec<String>, s: &Settings) -> Result
             let err = String::from_utf8_lossy(&stderr).trim().to_string();
             errors.push(format!(
                 "能力探针无结果: {}",
-                if err.is_empty() { format!("exit {:?}", exit_code) } else { err.chars().take(250).collect() }
+                if err.is_empty() {
+                    format!("exit {:?}", exit_code)
+                } else {
+                    err.chars().take(250).collect()
+                }
             ));
         }
         if node_checked_at == 0 {
@@ -252,7 +266,11 @@ pub async fn probe(file_raw: &str, targets: Vec<String>, s: &Settings) -> Result
                 });
             if ledger_done.iter().any(|x| x == dest) {
                 c.published = true;
-                c.source = if c.source.is_empty() { "ledger".into() } else { format!("{}+ledger", c.source) };
+                c.source = if c.source.is_empty() {
+                    "ledger".into()
+                } else {
+                    format!("{}+ledger", c.source)
+                };
                 c.detail = if c.detail.trim().is_empty() {
                     "任务台账显示已成功发布".into()
                 } else {
@@ -300,15 +318,39 @@ mod tests {
             size: 10,
             targets: vec!["quark".into(), "x".into(), "youtube".into()],
             caps: vec![
-                PublishCapability { dest: "quark".into(), available: true, published: false, reason: "ready".into(), detail: String::new(), source: "test".into() },
-                PublishCapability { dest: "x".into(), available: false, published: false, reason: "unavailable".into(), detail: String::new(), source: "test".into() },
-                PublishCapability { dest: "youtube".into(), available: true, published: true, reason: "published".into(), detail: String::new(), source: "test".into() },
+                PublishCapability {
+                    dest: "quark".into(),
+                    available: true,
+                    published: false,
+                    reason: "ready".into(),
+                    detail: String::new(),
+                    source: "test".into(),
+                },
+                PublishCapability {
+                    dest: "x".into(),
+                    available: false,
+                    published: false,
+                    reason: "unavailable".into(),
+                    detail: String::new(),
+                    source: "test".into(),
+                },
+                PublishCapability {
+                    dest: "youtube".into(),
+                    available: true,
+                    published: true,
+                    reason: "published".into(),
+                    detail: String::new(),
+                    source: "test".into(),
+                },
             ],
             errors: vec![],
             checked_at: 1,
         };
         assert_eq!(p.selectable(false), vec!["quark".to_string()]);
-        assert_eq!(p.selectable(true), vec!["quark".to_string(), "youtube".to_string()]);
+        assert_eq!(
+            p.selectable(true),
+            vec!["quark".to_string(), "youtube".to_string()]
+        );
         assert_eq!(p.skipped(false).len(), 2);
         assert!(p.log_lines(false).iter().any(|l| l.contains("账号已发布")));
     }

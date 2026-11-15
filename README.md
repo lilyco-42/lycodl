@@ -37,6 +37,16 @@ cd .. && cargo build --release
 
 首次运行会自动探测系统里已有的 yt-dlp；想用托管副本就执行一次 `lycodl kernel-update`。
 
+### 桌面图标与应用菜单
+
+应用图标源文件是 `web/public/app-icon.svg`（深色圆角底 + 立方体下载箭头）；网页 favicon、扩展图标和桌面图标都由它生成。装到当前用户目录：
+
+```bash
+./scripts/install-desktop-icon.sh
+```
+
+脚本生成 hicolor 的 14 档 PNG 与 scalable SVG，写 `~/.local/share/applications/lycodl.desktop`（`Icon=lycodl`），必要时放一份「单开关」启动器 `~/.local/bin/lycodl-app`（已存在则保留），并刷新图标缓存。需要 `rsvg-convert`（Arch: `librsvg`；Debian/Ubuntu: `librsvg2-bin`）；`gtk-update-icon-cache`、`desktop-file-validate` 可选。可用 `XDG_DATA_HOME`、`LYCODL_BIN_DIR`、`LYCODL_URL` 覆盖目标路径与控制台地址；重复执行是幂等的，隔离 HOME 的回归测试是 `scripts/test-install-desktop-icon.sh`。
+
 ## 常驻与单实例
 
 重复执行 `lycodl --web` 不会叠出第二个服务：程序会把端口记在 `~/.local/share/lycodl/web.port`，启动前先探一下那个端口上的 `/api/health` 是不是自己（校验 `name == "lycodl"`，不认错别的程序），是就直接打印
@@ -98,7 +108,9 @@ lycodl download --url <视频页> --mode custom --format-id 137
 
 ## 网页控制台
 
-六个页签：**下载**（粘贴链接 → 解析 → 选模式/画质 → 提交）、**任务**（SSE 实时进度、取消、重试、日志）、**文件**（成品列表、直接下载、定位到文件夹）、**设置**（输出目录、浏览器 Cookie、代理、并发数、指纹伪装、直链兜底、内核更新）、**平台**（运行环境自检、主流站点目录、提取器搜索）、**命令（AI）**（把注册表当工具签名展示，可复制 CLI 用法给 AI）。
+七个页签：**下载**（粘贴链接 → 解析 → 选模式/画质 → 提交）、**任务**（SSE 实时进度、取消、重试、日志）、**文件**（成品列表、直接下载、定位到文件夹）、**发布**（本机视频一键发布、目的地只读预筛、最近发布台账）、**设置**（输出目录、浏览器 Cookie、代理、并发数、指纹伪装、直链兜底、内核更新、下载完自动发布）、**平台**（运行环境自检、主流站点目录、提取器搜索）、**命令（AI）**（把注册表当工具签名展示，可复制 CLI 用法给 AI）。
+
+界面基于 shadcn/ui（radix-nova）组件，深色/浅色共用一套 `--brand` token；半透明顶栏、下划线导航、卡片层次与表单聚焦态在 `web/src/App.tsx` / `web/src/index.css`，应用图标组件在 `web/src/components/app-logo.tsx`。
 
 「定位」走的是 `POST /api/reveal`：后端用 D-Bus 的 `org.freedesktop.FileManager1.ShowItems` 让 Dolphin / Nautilus 直接**选中**那个文件（实测拉起 `dolphin --select <路径>`），拉不起来就退一步 `xdg-open` 打开所在目录，再不行前端退回「复制路径到剪贴板」。该接口只允许定位输出目录内的路径，不能拿来当任意文件的打开原语。
 

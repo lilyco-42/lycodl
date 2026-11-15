@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { Bot, Download, FolderOpen, Globe, ListVideo, Settings2, UploadCloud, Zap } from "lucide-react";
+import { Bot, Download, FolderOpen, Globe, ListVideo, Settings2, UploadCloud } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
+import { AppLogo } from "@/components/app-logo";
 import { DownloadPanel } from "@/components/download-panel";
 import { JobsPanel } from "@/components/jobs-panel";
 import { FilesPanel } from "@/components/files-panel";
@@ -29,7 +31,7 @@ function App() {
   /** 文件页点「发布」时预填本机路径；token 递增保证同一路径可重复触发 */
   const [publishPath, setPublishPath] = useState<string>("");
   const [publishToken, setPublishToken] = useState(0);
-  const { health } = useHealth();
+  const { health, error } = useHealth();
 
   function handleUseExample(url: string) {
     setTab("download");
@@ -41,36 +43,71 @@ function App() {
     setExampleUrl(url);
   }
 
+  const online = health !== null && error === null;
+
   return (
-    <div className="min-h-dvh bg-background text-foreground">
-      <div className="mx-auto w-full max-w-5xl px-4 pt-8 pb-16 sm:px-6">
-        <header className="flex flex-wrap items-center justify-between gap-3 pb-6">
-          <div className="flex items-center gap-2.5">
-            <span className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <Zap className="size-5" />
-            </span>
+    <div className="min-h-dvh text-foreground">
+      <header className="sticky top-0 z-30 border-b border-border/70 bg-background/70 backdrop-blur-xl supports-[backdrop-filter]:bg-background/55">
+        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            <AppLogo className="size-10 rounded-xl shadow-lg shadow-brand/20" />
             <div className="leading-tight">
-              <h1 className="text-lg font-semibold tracking-tight">lycodl</h1>
-              <p className="text-xs text-muted-foreground">视频下载 · 本机发布 · 由 yt-dlp 内核驱动</p>
+              <h1 className="brand-text text-lg font-semibold tracking-tight">lycodl</h1>
+              <p className="text-xs text-muted-foreground">视频下载 · 本机发布 · yt-dlp 内核</p>
             </div>
           </div>
-          <Badge variant="outline" className="h-6 gap-1.5 px-2.5 font-mono text-xs">
-            yt-dlp {health?.ytdlpVersion ?? "未就绪"}
-          </Badge>
-        </header>
+          <div className="flex items-center gap-2">
+            <Badge
+              variant={online ? "default" : "outline"}
+              className={
+                online
+                  ? "h-6 gap-1.5 border-emerald-500/40 bg-emerald-500/15 px-2.5 text-xs text-emerald-300"
+                  : "h-6 gap-1.5 px-2.5 text-xs"
+              }
+            >
+              <span
+                className={
+                  online
+                    ? "size-1.5 rounded-full bg-emerald-400"
+                    : "size-1.5 rounded-full bg-muted-foreground"
+                }
+              />
+              {online ? "服务在线" : "连接中"}
+            </Badge>
+            <Badge variant="outline" className="h-6 gap-1.5 px-2.5 font-mono text-xs">
+              yt-dlp {health?.ytdlpVersion ?? "未就绪"}
+            </Badge>
+          </div>
+        </div>
+      </header>
 
-        <Tabs value={tab} onValueChange={setTab} className="gap-5">
-          <TabsList className="h-9 w-full justify-start gap-1 overflow-x-auto p-1 sm:w-fit">
-            {TABS.map((item) => {
-              const Icon = item.icon;
-              return (
-                <TabsTrigger key={item.value} value={item.value} className="px-3">
-                  <Icon />
-                  {item.label}
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
+      <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-16 sm:px-6">
+        <Tabs value={tab} onValueChange={setTab} className="gap-6">
+          <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+            <TabsList
+              variant="line"
+              className="h-10 w-full justify-start gap-1 border-b border-border/60 pb-0 sm:w-fit"
+            >
+              {TABS.map((item) => {
+                const Icon = item.icon;
+                const active = tab === item.value;
+                return (
+                  <TabsTrigger
+                    key={item.value}
+                    value={item.value}
+                    className={
+                      active
+                        ? "h-10 gap-2 px-3 text-brand after:bg-brand"
+                        : "h-10 gap-2 px-3 text-muted-foreground after:bg-brand"
+                    }
+                  >
+                    <Icon />
+                    {item.label}
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+          </div>
 
           <TabsContent value="download">
             <DownloadPanel onJobCreated={() => setTab("jobs")} exampleUrl={exampleUrl} />
@@ -106,15 +143,16 @@ function App() {
           </TabsContent>
         </Tabs>
 
-        <footer className="mt-12 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4 text-xs text-muted-foreground">
-          <span>
+        <Separator className="mt-12" />
+        <footer className="flex flex-wrap items-center justify-between gap-2 pt-4 text-xs text-muted-foreground">
+          <span className="font-mono">
             {health !== null
               ? health.name + " v" + health.version + " · " + health.webMode
               : "lycodl"}
           </span>
           <span>内核为独立二进制，可热更新</span>
         </footer>
-      </div>
+      </main>
       <Toaster position="top-center" theme="dark" richColors closeButton />
     </div>
   );

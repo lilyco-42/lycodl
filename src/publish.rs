@@ -181,7 +181,6 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-
 /// 单次发布的覆盖项：自动发布用默认值；本机发布用页面里的选择。
 #[derive(Debug, Clone)]
 pub struct PublishOptions {
@@ -232,6 +231,7 @@ fn human_status(status: &str) -> &'static str {
 }
 
 /// 把一条结果同时送给任务日志、ledger、实时任务快照和返回值。
+#[allow(clippy::too_many_arguments)]
 fn record_result<F, R>(
     mut r: PublishResult,
     file: &str,
@@ -246,7 +246,12 @@ fn record_result<F, R>(
     R: FnMut(PublishResult),
 {
     r.at = now_ms();
-    log(format!("发布 {}：{}（{}）", r.dest, human_status(&r.status), r.detail));
+    log(format!(
+        "发布 {}：{}（{}）",
+        r.dest,
+        human_status(&r.status),
+        r.detail
+    ));
     append_ledger(&LedgerEntry {
         file: file.to_string(),
         size,
@@ -277,6 +282,8 @@ fn driver_error(detail: impl Into<String>) -> PublishResult {
 ///
 /// pending 为空（全发过了）就直接返回空 Vec，不启动 driver。
 /// log 回调把进度写进任务日志，让「发布到哪、成功没成功」在 UI 里可追踪。
+#[cfg(test)]
+#[allow(dead_code)]
 pub async fn publish_one<F>(
     file: String,
     file_name: String,
@@ -288,8 +295,17 @@ pub async fn publish_one<F>(
 where
     F: FnMut(String),
 {
-    publish_one_with_progress(file, file_name, title, size, s, PublishOptions::default(), log, |_| {})
-        .await
+    publish_one_with_progress(
+        file,
+        file_name,
+        title,
+        size,
+        s,
+        PublishOptions::default(),
+        log,
+        |_| {},
+    )
+    .await
 }
 
 /// 带覆盖项的发布（不要求实时结果回调）。
@@ -309,6 +325,7 @@ where
 }
 
 /// 完整发布入口：每收到一条目的地结果就回调一次，便于任务卡实时显示。
+#[allow(clippy::too_many_arguments)]
 pub async fn publish_one_with_progress<F, R>(
     file: String,
     file_name: String,
@@ -325,7 +342,11 @@ where
 {
     let targets = effective_targets(&s, &o);
     let dry_run = effective_dry_run(&s, &o);
-    let done = if o.force { Vec::new() } else { already_ok(&file, size) };
+    let done = if o.force {
+        Vec::new()
+    } else {
+        already_ok(&file, size)
+    };
     let pending: Vec<String> = targets
         .iter()
         .filter(|d| !done.iter().any(|x| x == *d))
@@ -361,7 +382,11 @@ where
         "force": o.force,
     });
 
-    log(format!("{}：{file_name} → {}", o.label, pending.join(" / ")));
+    log(format!(
+        "{}：{file_name} → {}",
+        o.label,
+        pending.join(" / ")
+    ));
 
     let mut results: Vec<PublishResult> = Vec::new();
     let mut child = match cmd.spawn() {
@@ -369,7 +394,16 @@ where
         Err(e) => {
             let detail = format!("启动 driver 失败: {e}（{driver}）");
             log(format!("{}：{detail}", o.label));
-            record_result(driver_error(detail), &file, size, dry_run, &o, &mut log, &mut on_result, &mut results);
+            record_result(
+                driver_error(detail),
+                &file,
+                size,
+                dry_run,
+                &o,
+                &mut log,
+                &mut on_result,
+                &mut results,
+            );
             return results;
         }
     };
@@ -397,7 +431,16 @@ where
                             continue;
                         }
                     };
-                    record_result(r, &file, size, dry_run, &o, &mut log, &mut on_result, &mut results);
+                    record_result(
+                        r,
+                        &file,
+                        size,
+                        dry_run,
+                        &o,
+                        &mut log,
+                        &mut on_result,
+                        &mut results,
+                    );
                 }
                 Ok(None) => break,
                 Err(_) => break,
@@ -419,7 +462,16 @@ where
         Ok(st) if !st.success() => {
             let detail = format!("发布驱动退出码 {}", st.code().unwrap_or(-1));
             log(detail.clone());
-            record_result(driver_error(detail), &file, size, dry_run, &o, &mut log, &mut on_result, &mut results);
+            record_result(
+                driver_error(detail),
+                &file,
+                size,
+                dry_run,
+                &o,
+                &mut log,
+                &mut on_result,
+                &mut results,
+            );
         }
         Err(e) => log(format!("发布驱动异常: {e}")),
         _ => {}
@@ -508,7 +560,10 @@ mod tests {
         assert_eq!(effective_targets(&s, &o), s.publish_targets);
         assert_eq!(effective_dry_run(&s, &o), s.publish_dry_run);
         o.targets = Some(vec!["X".into(), "quark".into(), "bogus".into()]);
-        assert_eq!(effective_targets(&s, &o), vec!["quark".to_string(), "x".to_string()]);
+        assert_eq!(
+            effective_targets(&s, &o),
+            vec!["quark".to_string(), "x".to_string()]
+        );
         o.targets = Some(Vec::new());
         assert_eq!(effective_targets(&s, &o), default_targets());
         o.dry_run = Some(true);

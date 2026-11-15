@@ -18,6 +18,8 @@ Chrome 136 起，Google Chrome 拒绝在默认 `user-data-dir` 上开启 `--remo
 - CDP 独有或较新的行保留，不丢平台发布过程中产生的 cookie；
 - 比较 `last_update_utc`，重复执行幂等；
 - 不覆盖 `Local State` / `os_crypt`，因为两 profile 共用本机 Linux 钥匙环密钥，复制密文后可正常解密；
+- 只对桌面主 Chrome 的行数设下限（`LYCODL_MIN_COOKIES`，默认 100）：主 profile 太薄时跳过合并；
+- CDP profile 行数少、甚至为 0 时**不**阻止合并 —— 合并是加法式的（按键并入后做 union 校验），这种状态正是需要自愈的场景；
 - 任何读取/校验失败都跳过合并并返回 0，不阻塞 Chrome 启动；
 - 不保存、不打印 cookie 值或凭据。
 
@@ -45,6 +47,7 @@ curl -fsS http://127.0.0.1:9333/json/version
 ## 使用与排障
 
 - 桌面主 Chrome 里新登录平台后，需要重启 `lycodl.service` 才会把新 cookie 合并到 9333；停止/启动 `lycodl.service` 会自动连带停止/启动 CDP 单元。
+- 如果 CDP profile 的 `Default/Cookies` 被清空（本机 2026-11-15 出现过只剩 39 行 Google cookie 的情况），重启 `lycodl.service` 会自动从桌面主 Chrome 恢复；旧版本要求两边都不少于 100 行，会导致永久拒跑，已修复并有回归测试覆盖。
 - 不要把两个 Chrome 实例指向同一个默认 profile，避免 `SingletonLock` 与 SQLite 并发写坏。
 - 发布页「发布前筛选」会只读检查 CDP 登录 cookie、夸克账号网盘列表、平台发布器与本地 ledger；不会真发。
 - `publishDryRun=false` 时一键发布可能真发；只想看效果请先在设置里打开演练模式。

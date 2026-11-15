@@ -19,6 +19,7 @@ COLS = (
 
 
 def make_db(path, rows):
+    Path(path).unlink(missing_ok=True)
     con = sqlite3.connect(path)
     try:
         con.execute("""create table cookies (
@@ -56,13 +57,13 @@ def read_rows(path):
         con.close()
 
 
-def run_sync(script, main_dir, cdp_dir):
+def run_sync(script, main_dir, cdp_dir, min_cookies="1"):
     env = os.environ.copy()
     env.update({
         "LYCODL_MAIN_CHROME_DIR": str(main_dir),
         "LYCODL_CDP_CHROME_DIR": str(cdp_dir),
         "LYCODL_CHROME_PROFILE": "Default",
-        "LYCODL_MIN_COOKIES": "1",
+        "LYCODL_MIN_COOKIES": min_cookies,
     })
     return subprocess.run([sys.executable, str(script)], env=env, check=True, capture_output=True, text=True)
 
@@ -103,6 +104,35 @@ def main():
         assert "imported/updated 0" in second.stdout, second.stdout
         assert len(read_rows(cdp_db)) == 4
         assert not list((cdp_dir / "Default").glob("Cookies.*tmp"))
+    with tempfile.TemporaryDirectory() as td:
+        # Regression: a wiped CDP profile (Chrome recreates only a few rows)
+        # must be healed from the desktop profile, not silently skipped.
+        root = Path(td)
+        main_dir, cdp_dir = root / "main", root / "cdp"
+        (main_dir / "Default").mkdir(parents=True)
+        (cdp_dir / "Default").mkdir(parents=True)
+        main_db = main_dir / "Default" / "Cookies"
+        cdp_db = cdp_dir / "Default" / "Cookies"
+        make_db(main_db, [row("a.example", "n%d" % i, 200, "v") for i in range(150)])
+        make_db(cdp_db, [row("wipe.example", "only", 200, "v")])
+        healed = run_sync(script, main_dir, cdp_dir, min_cookies="100")
+        assert "merged desktop Chrome cookies: main 150, cdp 1" in healed.stdout, healed.stdout
+        assert len(read_rows(cdp_db)) == 151, len(read_rows(cdp_db))
+
+        # Fully wiped CDP DB (Chrome had not written anything back yet).
+        make_db(cdp_db, [])
+        wiped = run_sync(script, main_dir, cdp_dir, min_cookies="100")
+        assert "importing from desktop Chrome" in wiped.stdout, wiped.stdout
+        assert "merged desktop Chrome cookies: main 150, cdp 0" in wiped.stdout, wiped.stdout
+        assert len(read_rows(cdp_db)) == 150, len(read_rows(cdp_db))
+
+        # A thin desktop profile is still refused, so a fresh/empty main Chrome
+        # cannot wipe an authenticated CDP profile.
+        make_db(main_db, [row("a.example", "one", 200, "v")])
+        refused = run_sync(script, main_dir, cdp_dir, min_cookies="100")
+        assert "desktop Chrome has too few cookies" in refused.stdout, refused.stdout
+        assert len(read_rows(cdp_db)) == 150
+
     print("SYNC_CHROME_COOKIES_TEST_OK")
 
 

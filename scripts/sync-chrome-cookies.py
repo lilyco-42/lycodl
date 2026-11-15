@@ -182,10 +182,15 @@ def main() -> int:
         return 0
     try:
         src_count, dst_count = db_count(SRC), db_count(DST)
-        if src_count < MIN_COOKIES or dst_count < MIN_COOKIES:
-            log("source/target has too few cookies (%d/%d), keeping existing CDP login state" %
+        # Only the desktop source is guarded: a nearly empty CDP profile is
+        # exactly the state we must heal. The merge below is additive (rows are
+        # keyed and the union is verified), so fewer CDP rows are never unsafe.
+        if src_count < MIN_COOKIES:
+            log("desktop Chrome has too few cookies (%d/%d), keeping existing CDP login state" %
                 (src_count, dst_count))
             return 0
+        if dst_count == 0:
+            log("CDP profile has no cookies yet, importing from desktop Chrome")
         if db_schema(SRC) != list(COLS) or db_schema(DST) != list(COLS):
             log("Cookies schema differs from expected Chrome version, keeping existing CDP login state")
             return 0

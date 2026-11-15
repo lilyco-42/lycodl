@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Download, FolderOpen, Globe, ListVideo, Settings2, UploadCloud } from "lucide-react";
+import { Bot, Download, FolderOpen, Globe, ListVideo, RefreshCw, Settings2, UploadCloud } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -31,7 +31,7 @@ function App() {
   /** 文件页点「发布」时预填本机路径；token 递增保证同一路径可重复触发 */
   const [publishPath, setPublishPath] = useState<string>("");
   const [publishToken, setPublishToken] = useState(0);
-  const { health, error } = useHealth();
+  const { health, error, updateAvailable } = useHealth();
 
   function handleUseExample(url: string) {
     setTab("download");
@@ -77,6 +77,16 @@ function App() {
             <Badge variant="outline" className="h-6 gap-1.5 px-2.5 font-mono text-xs">
               yt-dlp {health?.ytdlpVersion ?? "未就绪"}
             </Badge>
+            {health?.webBuildId && (
+              <Badge variant="outline" className="h-6 gap-1.5 px-2.5 font-mono text-[10px]">
+                UI {health.webBuildId.slice(0, 8)}
+              </Badge>
+            )}
+            {updateAvailable && (
+              <Badge className="h-6 gap-1.5 px-2.5 text-xs">
+                <RefreshCw className="h-3 w-3 animate-spin" /> 检测到新版，正在刷新…
+              </Badge>
+            )}
           </div>
         </div>
       </header>
@@ -147,7 +157,7 @@ function App() {
         <footer className="flex flex-wrap items-center justify-between gap-2 pt-4 text-xs text-muted-foreground">
           <span className="font-mono">
             {health !== null
-              ? health.name + " v" + health.version + " · " + health.webMode
+              ? health.name + " v" + health.version + " · " + health.webMode + (health.webBuildId ? " · UI " + health.webBuildId.slice(0, 8) : "")
               : "lycodl"}
           </span>
           <span>内核为独立二进制，可热更新</span>

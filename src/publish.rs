@@ -166,6 +166,25 @@ pub fn published_dests(file: &str, size: u64) -> Vec<String> {
     already_ok(file, size)
 }
 
+/// 批量演练去重：同一 file×size×dest 演练过即跳过；失败/不可用始终允许重试。
+fn already_attempted(file: &str, size: u64, dry_run: bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in read_ledger() {
+        if e.file != file || e.size != size {
+            continue;
+        }
+        let counted = if dry_run {
+            (e.status == "dry-run" && e.dry_run) || (e.status == "ok" && !e.dry_run)
+        } else {
+            e.status == "ok" && !e.dry_run
+        };
+        if counted && !out.iter().any(|x| x == &e.dest) {
+            out.push(e.dest);
+        }
+    }
+    out
+}
+
 fn driver_command(s: &crate::settings::Settings) -> String {
     let raw = s.publish_driver.trim();
     if !raw.is_empty() {
@@ -353,7 +372,7 @@ where
     let done = if o.force {
         Vec::new()
     } else {
-        already_ok(&file, size)
+        already_attempted(&file, size, dry_run)
     };
     let pending: Vec<String> = targets
         .iter()
@@ -361,7 +380,12 @@ where
         .cloned()
         .collect();
     if pending.is_empty() {
-        log(format!("{}：{file_name} 已发布过，跳过", o.label));
+        let reason = if dry_run {
+            "已演练或发布过，跳过"
+        } else {
+            "已发布过，跳过"
+        };
+        log(format!("{}：{file_name} {reason}", o.label));
         return Vec::new();
     }
 
@@ -376,6 +400,7 @@ where
 
     let payload = serde_json::json!({
         "file": file,
+        "size": size,
         "fileName": file_name,
         "title": title,
         "pending": pending,
@@ -559,6 +584,14 @@ mod tests {
             source: "test".into(),
         });
         assert_eq!(already_ok("/tmp/a.mp4", 10), vec!["quark".to_string()]);
+        assert_eq!(
+            already_attempted("/tmp/a.mp4", 10, true),
+            vec!["quark".to_string(), "x".to_string()]
+        );
+        assert_eq!(
+            already_attempted("/tmp/a.mp4", 10, false),
+            vec!["quark".to_string()]
+        );
         assert!(already_ok("/tmp/a.mp4", 11).is_empty());
         assert_eq!(ledger_recent(5).len(), 2);
         std::env::remove_var("LYCODL_PUBLISH_LEDGER");

@@ -20,6 +20,9 @@ const INSTALLED_PUBLISHER = '/home/lilyco/.local/share/lycodl/platform-publish.m
 const SIBLING_PUBLISHER = fileURLToPath(new URL('./platform-publish.mjs', import.meta.url));
 const DEFAULT_PUBLISHER = existsSync(SIBLING_PUBLISHER) ? SIBLING_PUBLISHER : INSTALLED_PUBLISHER;
 const DEFAULT_PLATFORM_COMMAND = 'node ' + JSON.stringify(DEFAULT_PUBLISHER);
+const INSTALLED_CAPABILITIES = '/home/lilyco/.local/share/lycodl/publish-capabilities.mjs';
+const SIBLING_CAPABILITIES = fileURLToPath(new URL('./publish-capabilities.mjs', import.meta.url));
+const DEFAULT_CAPABILITIES = existsSync(SIBLING_CAPABILITIES) ? SIBLING_CAPABILITIES : INSTALLED_CAPABILITIES;
 
 function emit(o) { process.stdout.write(JSON.stringify(o) + '\n'); }
 
@@ -94,6 +97,7 @@ async function doPlatform(req, dest, platformCommand, share, passcode) {
     input: JSON.stringify(payload), encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024,
   });
   if (out.error) return { dest, status: 'failed', detail: String(out.error).slice(0, 400) };
+  if (out.status === null) return { dest, status: 'failed', detail: ('平台提交超时：' + Math.round(timeout / 1000) + 's；文件可能过大或平台上传未完成，请到创作平台核对草稿/作品后重试').slice(0, 400) };
   const lines = String(out.stdout || '').trim().split('\n').filter(Boolean);
   const line = lines[lines.length - 1];
   if (!line) {
@@ -106,6 +110,34 @@ async function doPlatform(req, dest, platformCommand, share, passcode) {
   } catch (e) { return { dest, status: 'failed', detail: ('平台提交器输出解析失败: ' + line).slice(0, 400) }; }
 }
 
+function preflightLocalFile(req) {
+  if (!existsSync(req.file)) return { dest: 'driver', status: 'failed', detail: '文件不存在: ' + req.file };
+  const size = Number(req.size || 0);
+  if (Number.isFinite(size) && size > 2 * 1024 * 1024 * 1024) {
+    return { dest: 'driver', status: 'failed', detail: '文件超过 2GB，平台网页上传不可靠，请手动处理' };
+  }
+  return null;
+}
+
+/** 唯一真实外发去重闸：driver 每次发布前重新查账号发布状态；失败/不可用允许重试。 */
+async function preflightAccount(req) {
+  if (req.dryRun || !existsSync(DEFAULT_CAPABILITIES) || !req.pending || !req.pending.length) return null;
+  const payload = Object.assign({}, req, { targets: req.pending });
+  const out = spawnSync(process.execPath, [DEFAULT_CAPABILITIES], {
+    input: JSON.stringify(payload), encoding: 'utf8', timeout: 120000, maxBuffer: 16 * 1024 * 1024,
+  });
+  if (out.error) return null;
+  const lines = String(out.stdout || '').trim().split('\n').filter(Boolean);
+  let caps = null;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try { const j = JSON.parse(lines[i]); if (j && Array.isArray(j.caps)) { caps = j; break; } } catch (e) { /* keep looking */ }
+  }
+  if (!caps || !Array.isArray(caps.caps)) return null;
+  const done = caps.caps.filter((c) => c && c.published).map((c) => c.dest);
+  if (done.length) console.error('driver: 账号已发布，跳过 ' + done.join(','));
+  return done;
+}
+
 async function main(raw) {
   let req;
   try { req = JSON.parse(raw); } catch (e) { throw new Error('driver 输入不是合法 JSON: ' + e.message); }
@@ -114,8 +146,15 @@ async function main(raw) {
   const share = req.shareUrl || DEFAULT_SHARE;
   const passcode = req.sharePasscode || DEFAULT_PASSCODE;
   const platformCommand = req.platformCommand || '';
+  const bad = preflightLocalFile(req);
+  if (bad) { emit(bad); return; }
+  const accountDone = await preflightAccount(req);
   for (const dest of pending) {
     try {
+      if (accountDone && accountDone.indexOf(dest) >= 0) {
+        emit({ dest, status: 'ok', detail: '账号台账显示已发布，跳过（不重复外发）' });
+        continue;
+      }
       if (dry) { emit({ dest, status: 'dry-run', detail: '演练：' + (req.fileName || req.file) + ' 将发布到 ' + dest }); continue; }
       let r;
       if (dest === 'quark') r = await doQuark(req);

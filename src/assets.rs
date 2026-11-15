@@ -37,7 +37,56 @@ pub fn index_html() -> Option<&'static [u8]> {
     DIST.get_file("index.html").map(|f| f.contents())
 }
 
+/// 前端产物指纹：对嵌入 dist 的路径与内容做稳定哈希，旧页面据此自动刷新。
+pub fn build_id() -> Option<String> {
+    if !embedded() {
+        return None;
+    }
+    let mut files: Vec<(String, &[u8])> = Vec::new();
+    collect("", &DIST, &mut files);
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut h: u64 = 0xcbf29ce484222325;
+    for (path, bytes) in files {
+        for b in path
+            .as_bytes()
+            .iter()
+            .copied()
+            .chain([0u8])
+            .chain(bytes.iter().copied())
+        {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    Some(format!("{h:016x}"))
+}
+
 /// 前端是否编译进二进制（决定 /api/health 里的 webMode）
 pub fn embedded() -> bool {
     index_html().is_some()
+}
+
+fn collect<'a>(prefix: &str, dir: &'a Dir<'static>, out: &mut Vec<(String, &'a [u8])>) {
+    for f in dir.files() {
+        let name = f.path().to_string_lossy();
+        let path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        out.push((path, f.contents()));
+    }
+    for d in dir.dirs() {
+        let name = d
+            .path()
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        collect(&path, d, out);
+    }
 }

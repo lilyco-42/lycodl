@@ -196,6 +196,7 @@ async fn health() -> Json<Value> {
         "ytdlpVersion": kernel.as_ref().map(|k| k.version.clone()),
         "ytdlpPath": kernel.as_ref().map(|k| k.path.display().to_string()),
         "webMode": if crate::assets::embedded() { "embedded" } else { "disk" },
+        "webBuildId": crate::assets::build_id(),
     }))
 }
 

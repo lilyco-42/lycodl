@@ -11,6 +11,7 @@ export interface Health {
   ytdlpVersion: string | null;
   ytdlpPath: string | null;
   webMode: WebMode;
+  webBuildId?: string | null;
 }
 
 export interface Settings {

@@ -16,6 +16,23 @@ async function connectBrowser(cdpUrl) {
 
 async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+function uploadHint(req) {
+  return '文件: ' + String(req.file || '') + '；若反复超时请改用小文件或在平台创作中心人工上传';
+}
+
+async function diagnose(page, err) {
+  const raw = String((err && err.message) || err);
+  let text = '';
+  try { text = await bodyText(page, 900); } catch (e) { /* ignore */ }
+  const failed = /(上传失败|上传异常|发布失败|网络异常|请重新上传|文件过大|格式不支持|登录已失效|身份验证|会话已过期)/.test(text);
+  const hint = failed ? '页面报错：' + text.slice(0, 260) : '等待/提交超时，可能上传未完成或成功提示文案变化';
+  return new Error(raw.slice(0, 220) + ' | ' + hint);
+}
+
+function sizeOk(req) {
+  return !req.size || Number(req.size) <= 2 * 1024 * 1024 * 1024;
+}
+
 async function bodyText(page, n) {
   return page.evaluate('(' + T('document.body.innerText') + ').slice(0,' + (n || 600) + ')');
 }
@@ -38,6 +55,7 @@ async function clickByText(page, texts, opts) {
 
 // ---------------- bilibili ----------------
 async function bilibili(req, browser) {
+  if (!sizeOk(req)) return { status: 'failed', detail: '文件超过 2GB，网页上传不可靠：' + uploadHint(req) };
   const { page, targetId } = await newPage(browser, 'https://member.bilibili.com/platform/upload/video/frame');
   try {
     await page.waitFor('!!document.querySelector("input[type=file]")', 30000);
@@ -75,7 +93,8 @@ async function bilibili(req, browser) {
     const url = bvid ? 'https://www.bilibili.com/video/' + bvid : null;
     if (!done) return { status: 'ok', detail: '已点击' + clicked + '（未捕获成功提示，请人工复核）', url };
     return { status: 'ok', detail: 'B站' + (done === 'draft' ? '已存草稿' : '已投稿') + (bvid ? ' ' + bvid : '') + ' | ' + body.slice(0, 160), url };
-  } finally { await closePage(browser, targetId); }
+  } catch (e) { throw await diagnose(page, e); }
+  finally { await closePage(browser, targetId); }
 }
 
 async function fillText(page, selector, text, opts) {
@@ -104,6 +123,7 @@ async function pickRadio(page, text) {
 
 // ---------------- douyin ----------------
 async function douyin(req, browser) {
+  if (!sizeOk(req)) return { status: 'failed', detail: '文件超过 2GB，网页上传不可靠：' + uploadHint(req) };
   const { page, targetId } = await newPage(browser, 'https://creator.douyin.com/creator-micro/content/upload');
   try {
     await page.waitFor('!!document.querySelector("input[type=file]")', 60000, 1000);
@@ -131,11 +151,13 @@ async function douyin(req, browser) {
     if (!done) return { status: 'failed', detail: '点击发布后未捕获成功提示 | ' + body.slice(0, 220) };
     const workId = await page.evaluate('(function(){var m=(document.body.innerText||"").match(/\/video\/([0-9]{15,25})/);return m?m[1]:null;})()').catch(function () { return null; });
     return { status: 'ok', detail: '抖音已发布' + (workId ? ' ' + workId : '') + ' | ' + body.slice(0, 180), url: workId ? 'https://www.douyin.com/video/' + workId : null };
-  } finally { await closePage(browser, targetId); }
+  } catch (e) { throw await diagnose(page, e); }
+  finally { await closePage(browser, targetId); }
 }
 
 // ---------------- xiaohongshu ----------------
 async function xhs(req, browser) {
+  if (!sizeOk(req)) return { status: 'failed', detail: '文件超过 2GB，网页上传不可靠：' + uploadHint(req) };
   const { page, targetId } = await newPage(browser, 'https://creator.xiaohongshu.com/publish/publish?source=official');
   try {
     await page.waitFor('!!document.querySelector("input[type=file]")', 60000, 1000);
@@ -178,11 +200,13 @@ async function xhs(req, browser) {
     const body = await bodyText(page, 300);
     if (!done) return { status: 'failed', detail: '点击' + clickedLabel + '后未捕获成功提示 | ' + body.slice(0, 220) };
     return { status: 'ok', detail: '小红书已发布 | ' + body.slice(0, 180) };
-  } finally { await closePage(browser, targetId); }
+  } catch (e) { throw await diagnose(page, e); }
+  finally { await closePage(browser, targetId); }
 }
 
 // ---------------- kuaishou ----------------
 async function kuaishou(req, browser) {
+  if (!sizeOk(req)) return { status: 'failed', detail: '文件超过 2GB，网页上传不可靠：' + uploadHint(req) };
   const { page, targetId } = await newPage(browser, 'https://cp.kuaishou.com/article/publish/video');
   try {
     await page.waitFor('!!document.querySelector("input[type=file]")', 60000, 1000);
@@ -217,7 +241,8 @@ async function kuaishou(req, browser) {
     const body = await bodyText(page, 300);
     if (!done) return { status: 'failed', detail: '点击' + clicked + '后未捕获成功提示 | ' + body.slice(0, 220) };
     return { status: 'ok', detail: '快手已发布 | ' + body.slice(0, 180) };
-  } finally { await closePage(browser, targetId); }
+  } catch (e) { throw await diagnose(page, e); }
+  finally { await closePage(browser, targetId); }
 }
 
 // ---------------- x (twitter) ----------------
@@ -263,6 +288,7 @@ async function xpost(req, browser) {
 const YT_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36';
 
 async function youtube(req, browser) {
+  if (!sizeOk(req)) return { status: 'failed', detail: '文件超过 2GB，网页上传不可靠：' + uploadHint(req) };
   const { page, targetId } = await newPage(browser, 'about:blank');
   try {
     // headless 默认 UA 会被 studio 判为不支持的浏览器，必须覆写
@@ -341,7 +367,8 @@ async function youtube(req, browser) {
     // 关闭确认对话框（隐藏的 secondary-action-button 需要 DOM click）
     await page.evaluate('(function(){var b=document.querySelector("#secondary-action-button button")||document.querySelector("#close-button");if(b){b.click();return 1;}return 0;})()').catch(function () { return null; });
     return { status: 'ok', detail: 'YouTube 已发布(' + label + ')', url: url };
-  } finally { await closePage(browser, targetId); }
+  } catch (e) { throw await diagnose(page, e); }
+  finally { await closePage(browser, targetId); }
 }
 
 const HANDLERS = { bilibili, douyin, xhs, kuaishou, x: xpost, youtube };

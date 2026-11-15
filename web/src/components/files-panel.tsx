@@ -113,6 +113,9 @@ export function FilesPanel({
 
   /** 顶部「全部发布」：默认演练，真发需关闭演练并再次勾选风险确认。 */
   async function handlePublishAll() {
+    if (!publishAllDryRun && !window.confirm("将对输出目录内的全部成品向已选平台真实外发。此操作可能耗时数小时并产生大量重复内容；确认继续？")) {
+      return;
+    }
     const selected = settings?.publishTargets ?? [];
     if (selected.length === 0) {
       toast.error("还没有选择发布目的地");

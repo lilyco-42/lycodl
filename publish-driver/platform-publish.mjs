@@ -2,15 +2,14 @@
 // lycodl 平台发布提交器：通过 CDP 驱动已登录的浏览器完成各平台投稿。
 // 输入 payload: {dest, file, fileName, title, shareUrl, sharePasscode, cdpUrl, draft, timeoutSecs}
 // 输出: {status:'ok'|'failed'|'unavailable', detail, url}
-import { httpJson, Conn, newPage, closePage, truncateBytes } from './cdp-util.mjs';
+import { httpJson, Conn, newPage, closePage, truncateBytes, ensureCdp } from './cdp-util.mjs';
 
 const NL = String.fromCharCode(10);
 
 function T(expr) { return 'String(' + expr + '||"").split(String.fromCharCode(10)).join(" | ")'; }
 
 async function connectBrowser(cdpUrl) {
-  const ver = await httpJson(String(cdpUrl || 'http://127.0.0.1:9333').replace(/\/+$/, '') + '/json/version', 4000);
-  if (!ver || !ver.webSocketDebuggerUrl) throw new Error('CDP 未就绪');
+  const ver = await ensureCdp(cdpUrl, { timeoutMs: 20000 });
   return Conn.connect(ver.webSocketDebuggerUrl);
 }
 
@@ -293,16 +292,36 @@ async function youtube(req, browser) {
   try {
     // headless 默认 UA 会被 studio 判为不支持的浏览器，必须覆写
     await page.send('Network.setUserAgentOverride', { userAgent: YT_UA, acceptLanguage: 'zh-CN,zh;q=0.9,en;q=0.8', platform: 'Linux x86_64' });
-    await page.goto('https://studio.youtube.com/channel/UCCj5P1tds-rFf-7lftmFS4A/videos/upload', 12000);
+    const uploadUrl = 'https://studio.youtube.com/channel/UCCj5P1tds-rFf-7lftmFS4A/videos/upload';
+    await page.goto(uploadUrl, 30000);
+    await sleep(2500);
+    const landed = await page.evaluate('location.href').catch(function () { return ''; });
+    const unsupported = await page.evaluate('(function(){var t=document.body.innerText||"";return t.indexOf("不受支持")>=0||t.indexOf("not supported")>=0;})()').catch(function () { return false; });
+    if (!/\/videos\/upload/.test(landed) || unsupported) {
+      await page.goto(uploadUrl, 30000);
+      await sleep(3000);
+    }
     // 注意：页面上的 #dialog 容器始终存在，不能用它判断是否已进入上传对话框，只能看是否有 file input
+    // Studio 会恢复上次未完成的上传队列；恢复态里没有 file input，必须先取消
+    const restored = await page.evaluate('!!document.querySelector("ytcp-uploads-dialog")').catch(function () { return false; });
+    if (restored) {
+      await page.evaluate('(function(){var b=Array.from(document.querySelectorAll("ytcp-button,button")).find(function(e){var t=(e.innerText||"").trim();return t==="Cancel"||t==="取消"||t==="Discard"||t==="放弃";});if(b){b.click();return 1;}return 0;})()').catch(function () {});
+      await sleep(1500);
+      await page.evaluate('(function(){var b=Array.from(document.querySelectorAll("ytcp-button,button")).find(function(e){var t=(e.innerText||"").trim();return t==="Discard"||t==="放弃"||t==="OK"||t==="确定";});if(b){b.click();return 1;}return 0;})()').catch(function () {});
+      await sleep(2500);
+    }
     if (await page.evaluate('!!document.querySelector("input[type=file]")')) {
       // 已在上传对话框
     } else {
-      await page.waitFor('(function(){var t=document.body.innerText||"";return t.indexOf("Channel content")>=0||t.indexOf("Create")>=0;})()', 90000, 1500);
-      await page.evaluate('(function(){var els=Array.from(document.querySelectorAll("ytcp-button,button,a,div"));for(var i=0;i<els.length;i++){var e=els[i];if((e.innerText||"").trim()!=="Create")continue;if(!e.getClientRects().length)continue;e.click();return 1;}return 0;})()');
-      await sleep(2500);
-      await page.evaluate('(function(){var els=Array.from(document.querySelectorAll("tp-yt-paper-item,div,span"));for(var i=0;i<els.length;i++){var e=els[i];if((e.innerText||"").trim()!=="Upload videos")continue;if(!e.getClientRects().length)continue;e.click();return 1;}return 0;})()');
-      await sleep(3500);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await page.waitFor('(function(){var t=document.body.innerText||"";return t.indexOf("Channel content")>=0||t.indexOf("频道内容")>=0||t.indexOf("Create")>=0||t.indexOf("创造")>=0||t.indexOf("创建")>=0;})()', 90000, 1500);
+        await page.evaluate('(function(){var all=[];(function rec(root,d){if(d>8)return;var list=root.querySelectorAll?Array.from(root.querySelectorAll("*")):[];for(var i=0;i<list.length;i++){var e=list[i];all.push(e);if(e.shadowRoot)rec(e.shadowRoot,d+1);else if(e._sr)rec(e._sr,d+1);}})(document,0);for(var i=0;i<all.length;i++){var e=all[i];var t=(e.innerText||"").trim();if(t!=="Create"&&t!=="创造"&&t!=="创建")continue;if(!e.getClientRects().length)continue;e.click();return 1;}return 0;})()');
+        await sleep(2200);
+        await page.evaluate('(function(){var all=[];(function rec(root,d){if(d>8)return;var list=root.querySelectorAll?Array.from(root.querySelectorAll("*")):[];for(var i=0;i<list.length;i++){var e=list[i];all.push(e);if(e.shadowRoot)rec(e.shadowRoot,d+1);else if(e._sr)rec(e._sr,d+1);}})(document,0);for(var i=0;i<all.length;i++){var e=all[i];var t=(e.innerText||"").trim();if(t!=="Upload videos"&&t!=="上传视频")continue;if(!e.getClientRects().length)continue;e.click();return 1;}return 0;})()');
+        await sleep(3000);
+        if (await page.evaluate('!!document.querySelector("input[type=file]")')) break;
+        await sleep(1500);
+      }
     }
     await page.waitFor('!!document.querySelector("input[type=file]")', 90000, 1500);
     await page.setFile('input[type=file]', req.file);
@@ -327,16 +346,34 @@ async function youtube(req, browser) {
     const isVisibility = '(function(){var d=document.querySelector("ytcp-uploads-dialog");if(!d)return false;'
       + 'var r=Array.from(d.querySelectorAll("tp-yt-paper-radio-button")).map(function(e){return e.name||"";});'
       + 'return r.indexOf("VIDEO_PUBLIC")>=0||r.join(",").indexOf("PUBLIC")>=0;})()';
+    const clickAt = async (x, y) => {
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+      await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+      await sleep(80);
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+    };
+    const clickRadio = async (name) => {
+      const pos = await page.evaluate(`(function(){var e=[...document.querySelectorAll('ytcp-uploads-dialog tp-yt-paper-radio-button')].find(function(x){return x.name===${JSON.stringify(name)};});if(!e)return null;e.scrollIntoView({block:'center'});var r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()`);
+      if (!pos || !pos.x) return false;
+      await clickAt(pos.x, pos.y);
+      return true;
+    };
+    const clickButton = async (sel) => {
+      const pos = await page.evaluate(`(function(){var b=document.querySelector(${JSON.stringify('ytcp-uploads-dialog ' + sel)});if(!b)return null;b.scrollIntoView({block:'center'});var r=b.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),dis:b.disabled};})()`);
+      if (!pos || !pos.x) return null;
+      await clickAt(pos.x, pos.y);
+      return pos;
+    };
     const t0 = Date.now();
     let reached = false;
     while (Date.now() - t0 < 900000) {
       if (await page.evaluate(isVisibility)) { reached = true; break; }
       // 有必答的「是否为儿童打造」未选时先答 No
-      await page.evaluate('(function(){var rs=Array.from(document.querySelectorAll("tp-yt-paper-radio-button"));'
-        + 'for(var i=0;i<rs.length;i++){if(rs[i].name==="VIDEO_MADE_FOR_KIDS_NOT_MFK"&&rs[i].getAttribute("aria-checked")!=="true"){'
-        + 'var t=rs[i].querySelector("#radioContainer")||rs[i].querySelector("div")||rs[i];t.click();return 1;}}return 0;})()');
+      const pics = await page.evaluate('[...document.querySelectorAll("ytcp-uploads-dialog tp-yt-paper-radio-button")].map(function(e){return {n:e.name,c:e.getAttribute("aria-checked")};})');
+      const notMfk = (pics || []).find(function(x){ return x.n === 'VIDEO_MADE_FOR_KIDS_NOT_MFK'; });
+      if (notMfk && notMfk.c !== 'true') { await clickRadio('VIDEO_MADE_FOR_KIDS_NOT_MFK'); await sleep(600); }
       const st = await page.evaluate('(function(){var b=document.querySelector("#next-button");return b?(b.disabled?"disabled":"enabled"):"none";})()');
-      if (st === 'enabled') { await page.evaluate('document.querySelector("#next-button").click()'); }
+      if (st === 'enabled') { await clickButton('#next-button'); }
       await sleep(3500);
     }
     if (!reached) {
@@ -347,16 +384,12 @@ async function youtube(req, browser) {
     // 选择可见性：public / unlisted / private
     const want = String(req.youtubeVisibility || 'public');
     const label = want === 'private' ? 'Private' : (want === 'unlisted' ? 'Unlisted' : 'Public');
-    const picked = await page.evaluate('(function(){var want=' + JSON.stringify(label) + ';'
-      + 'var rs=Array.from(document.querySelectorAll("ytcp-uploads-dialog tp-yt-paper-radio-button"));'
-      + 'for(var i=0;i<rs.length;i++){var e=rs[i];var t=(e.innerText||"").trim().toLowerCase();'
-      + ' if(t.indexOf(want.toLowerCase())!==0)continue;'
-      + ' var c=e.querySelector("#radioContainer")||e.querySelector("div")||e;c.click();return (e.innerText||"").trim().slice(0,20);}'
-      + 'return null;})()');
+    const pickName = want === 'private' ? 'PRIVATE' : (want === 'unlisted' ? 'UNLISTED' : 'PUBLIC');
+    const pickedOk = await clickRadio(pickName);
+    if (!pickedOk) return { status: 'failed', detail: '未找到可见性选项: ' + pickName };
     await sleep(1500);
-    const saveClicked = await page.evaluate('(function(){var b=document.querySelector("#done-button");if(!b)return "none";if(b.disabled)return "disabled";'
-      + 'try{var sr=b.shadowRoot;}catch(e){}b.click();return "clicked";})()');
-    if (saveClicked !== 'clicked') return { status: 'failed', detail: '保存按钮不可用: ' + String(saveClicked) + ' 可见性=' + String(picked) };
+    const savePos = await clickButton('#done-button');
+    if (!savePos || savePos.dis) return { status: 'failed', detail: '保存按钮不可用: ' + JSON.stringify(savePos) + ' 可见性=' + pickName };
     // 成功后会出现确认对话框（Published / 已发布），视频链接 https://youtu.be/xxxx
     const done = await page.waitFor('(function(){var t=document.body.innerText||"";var l=Array.from(document.querySelectorAll("a")).map(function(e){return e.href||"";});'
       + 'var yt=l.filter(function(h){return h.indexOf("youtu.be/")>0;});'

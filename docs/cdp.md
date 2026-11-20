@@ -9,6 +9,7 @@ Chrome 136 起，Google Chrome 拒绝在默认 `user-data-dir` 上开启 `--remo
 - `~/.cache/lycodl-cdp-profile`，由 `lycodl-cdp.service` 在 `127.0.0.1:9333` 启动；
 - `lycodl.service` 仍是唯一用户开关，`lycodl-cdp.service` 是 `PartOf=lycodl.service` 的 static 内部单元，不要单独 enable；
 - 每次启动 CDP 之前，`scripts/sync-chrome-cookies.py` 把桌面主 Chrome 的 `Default/Cookies` 合并进专用 profile。
+- `lycodl-cdp.service` 设为 `Restart=always` + `RestartSec=3`，连 0 退出也会自动拉起；`lycodl.service` 停止时仍通过 `PartOf` 连带停止。
 
 ## Cookie 合并策略
 
@@ -49,5 +50,6 @@ curl -fsS http://127.0.0.1:9333/json/version
 - 桌面主 Chrome 里新登录平台后，需要重启 `lycodl.service` 才会把新 cookie 合并到 9333；停止/启动 `lycodl.service` 会自动连带停止/启动 CDP 单元。
 - 如果 CDP profile 的 `Default/Cookies` 被清空（本机 2026-11-15 出现过只剩 39 行 Google cookie 的情况），重启 `lycodl.service` 会自动从桌面主 Chrome 恢复；旧版本要求两边都不少于 100 行，会导致永久拒跑，已修复并有回归测试覆盖。
 - 不要把两个 Chrome 实例指向同一个默认 profile，避免 `SingletonLock` 与 SQLite 并发写坏。
-- 发布页「发布前筛选」会只读检查 CDP 登录 cookie、夸克账号网盘列表、平台发布器与本地 ledger；不会真发。
+- 发布页「发布前筛选」会只读检查 CDP 登录 cookie、夸克账号网盘列表、平台发布器与本地 ledger；不会真发。真实发布前 driver 会自检 CDP，9333 离线时尝试 `systemctl --user start lycodl-cdp.service` 并等待约 20 秒；仍失败则该平台标记不可用，不影响夸克上传。
+- `/api/health` 每 15 秒被 UI 轮询，返回 `cdpReady` / `cdpDetail` / `cdpUrl`；页头显示「发布浏览器在线/离线」，发布页在真发模式下显示离线提示。
 - `publishDryRun=false` 时一键发布可能真发；只想看效果请先在设置里打开演练模式。

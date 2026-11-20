@@ -1,6 +1,7 @@
 // lycodl CDP 辅助库（供 publish-driver 的平台提交器使用）
 'use strict';
 import http from 'node:http';
+import { spawnSync } from 'node:child_process';
 
 export function httpJson(url, timeout = 4000) {
   return new Promise((resolve, reject) => {
@@ -12,6 +13,46 @@ export function httpJson(url, timeout = 4000) {
     req.on('error', reject);
     req.setTimeout(timeout, () => { req.destroy(new Error('HTTP 超时')); });
   });
+}
+
+/**
+ * Ensure the local CDP browser is reachable. If the dedicated 9333 unit is down,
+ * try to start it once and wait briefly. Read-only probes must not call this.
+ */
+export async function ensureCdp(cdpUrl, options = {}) {
+  const base = String(cdpUrl || 'http://127.0.0.1:9333').replace(/\/+$/, '');
+  const versionUrl = base + '/json/version';
+  const timeoutMs = Math.max(1000, Number(options.timeoutMs || 20000));
+  const service = String(options.service || 'lycodl-cdp.service');
+  try {
+    const ver = await httpJson(versionUrl, 3000);
+    if (ver && ver.webSocketDebuggerUrl) return ver;
+  } catch (e) { /* service may be down; try to recover */ }
+  const localDedicatedPort = /^https?:\/\/(?:127\.0\.0\.1|localhost):9333$/i.test(base);
+  let startDetail = 'not attempted (non-default CDP URL)';
+  if (localDedicatedPort && options.autoStart !== false) {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
+    const runtimeDir = process.env.XDG_RUNTIME_DIR || ('/run/user/' + uid);
+    const env = Object.assign({}, process.env, {
+      XDG_RUNTIME_DIR: runtimeDir,
+      DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || ('unix:path=' + runtimeDir + '/bus'),
+    });
+    const r = spawnSync('systemctl', ['--user', 'start', service], {
+      encoding: 'utf8', timeout: 12000, env,
+    });
+    startDetail = r.error
+      ? String(r.error.message || r.error).slice(0, 240)
+      : (r.status === 0 ? 'systemctl start ok' : String(r.stderr || r.stdout || ('exit ' + r.status)).trim().slice(0, 240));
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const ver = await httpJson(versionUrl, 2000);
+      if (ver && ver.webSocketDebuggerUrl) return ver;
+    } catch (e) { /* keep waiting */ }
+  }
+  throw new Error('CDP 未就绪（' + versionUrl + '）；自动拉起 ' + service + '：' + startDetail);
 }
 
 export class Conn {

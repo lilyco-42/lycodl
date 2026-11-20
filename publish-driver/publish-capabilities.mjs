@@ -150,8 +150,16 @@ async function main(raw) {
     ? DESTS.filter(d => req.targets.includes(d)) : DESTS.slice();
 
   let cookies = [];
-  try { cookies = await cdpCookies(req.cdpUrl); }
-  catch (e) { errors.push('CDP cookie 检查失败: ' + String((e && e.message) || e).slice(0, 180)); }
+  let cdpReady = false;
+  let cdpDetail = '';
+  try {
+    cookies = await cdpCookies(req.cdpUrl);
+    cdpReady = true;
+    cdpDetail = 'CDP 已就绪，登录 Cookie ' + cookies.length + ' 项';
+  } catch (e) {
+    cdpDetail = String((e && e.message) || e).slice(0, 180);
+    errors.push('CDP cookie 检查失败: ' + cdpDetail);
+  }
 
   let quarkAvailable = false;
   let quarkPublished = false;
@@ -205,6 +213,9 @@ async function main(raw) {
   });
   process.stdout.write(JSON.stringify({
     caps,
+    cdpReady,
+    cdpDetail,
+    cdpUrl: String(req.cdpUrl || 'http://127.0.0.1:9333'),
     checkedAt: Date.now(),
     errors,
   }) + '\n');

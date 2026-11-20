@@ -14,6 +14,7 @@ mod api;
 mod assets;
 mod browser;
 mod caps;
+mod cdp;
 mod commands;
 mod jobs;
 mod paths;

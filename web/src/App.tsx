@@ -77,6 +77,26 @@ function App() {
             <Badge variant="outline" className="h-6 gap-1.5 px-2.5 font-mono text-xs">
               yt-dlp {health?.ytdlpVersion ?? "未就绪"}
             </Badge>
+            {health?.cdpReady === true && (
+              <Badge
+                variant="outline"
+                className="h-6 gap-1.5 border-sky-500/40 bg-sky-500/10 px-2.5 text-xs text-sky-300"
+                title={health.cdpDetail ?? undefined}
+              >
+                <span className="size-1.5 rounded-full bg-sky-400" />
+                发布浏览器在线
+              </Badge>
+            )}
+            {health?.cdpReady === false && (
+              <Badge
+                variant="destructive"
+                className="h-6 gap-1.5 px-2.5 text-xs"
+                title={health.cdpDetail ?? undefined}
+              >
+                <span className="size-1.5 rounded-full bg-destructive" />
+                发布浏览器离线
+              </Badge>
+            )}
             {health?.webBuildId && (
               <Badge variant="outline" className="h-6 gap-1.5 px-2.5 font-mono text-[10px]">
                 UI {health.webBuildId.slice(0, 8)}
@@ -139,6 +159,8 @@ function App() {
             <PublishPanel
               prefillPath={publishPath !== "" ? publishPath : undefined}
               prefillToken={publishToken}
+              cdpReady={health?.cdpReady ?? null}
+              cdpDetail={health?.cdpDetail ?? null}
               onTaskCreated={() => setTab("jobs")}
             />
           </TabsContent>

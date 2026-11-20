@@ -22,6 +22,9 @@ interface PublishPanelProps {
   prefillToken?: number;
   /** 建任务后跳到「任务」页看实时结果 */
   onTaskCreated?: () => void;
+  /** 来自 /api/health 的 CDP 状态，用于提示真实发布是否需要先自愈 */
+  cdpReady?: boolean | null;
+  cdpDetail?: string | null;
 }
 
 function baseName(path: string): string {
@@ -38,7 +41,7 @@ function capLabel(cap: { available: boolean; published: boolean }): string {
 }
 
 /** 本机视频手动发布：浏览器选择文件上传，或直接填后端所在机器的绝对路径。 */
-export function PublishPanel({ prefillPath, prefillToken, onTaskCreated }: PublishPanelProps) {
+export function PublishPanel({ prefillPath, prefillToken, onTaskCreated, cdpReady, cdpDetail }: PublishPanelProps) {
   const { settings, loading: settingsLoading } = useSettings();
   const [file, setFile] = useState<File | null>(null);
   const [pickerKey, setPickerKey] = useState(0);
@@ -369,6 +372,12 @@ export function PublishPanel({ prefillPath, prefillToken, onTaskCreated }: Publi
               真发模式：提交后会向已勾选平台外发；仅检查流程请打开「只演练」。
             </div>
           )}
+
+          {!dryRun && cdpReady === false && targets.some((d) => d !== "quark") ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              发布浏览器（CDP 9333）离线；提交时会尝试自动拉起，失败则标记为不可用。{cdpDetail ? "详情：" + cdpDetail : ""}
+            </div>
+          ) : null}
 
           {file !== null && busy ? (
             <div className="space-y-1.5">

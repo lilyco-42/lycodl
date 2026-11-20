@@ -12,6 +12,9 @@ export interface Health {
   ytdlpPath: string | null;
   webMode: WebMode;
   webBuildId?: string | null;
+  cdpReady?: boolean;
+  cdpDetail?: string | null;
+  cdpUrl?: string | null;
 }
 
 export interface Settings {

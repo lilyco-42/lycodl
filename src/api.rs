@@ -188,8 +188,10 @@ async fn plugin_token_rotate(State(st): State<AppState>) -> Result<Json<Value>, 
     })))
 }
 
-async fn health() -> Json<Value> {
+async fn health(State(st): State<AppState>) -> Json<Value> {
     let kernel = ytdlp::locate().ok();
+    let cdp_url = st.snapshot().publish_cdp_url;
+    let (cdp_ready, cdp_detail) = crate::cdp::check(&cdp_url).await;
     Json(json!({
         "name": "lycodl",
         "version": env!("CARGO_PKG_VERSION"),
@@ -197,6 +199,9 @@ async fn health() -> Json<Value> {
         "ytdlpPath": kernel.as_ref().map(|k| k.path.display().to_string()),
         "webMode": if crate::assets::embedded() { "embedded" } else { "disk" },
         "webBuildId": crate::assets::build_id(),
+        "cdpReady": cdp_ready,
+        "cdpDetail": cdp_detail,
+        "cdpUrl": cdp_url,
     }))
 }
 

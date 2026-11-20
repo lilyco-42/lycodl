@@ -8,6 +8,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { ensureCdp } from './cdp-util.mjs';
 
 const PLATFORMS = ['bilibili', 'douyin', 'xhs', 'kuaishou', 'youtube'];
 const DEFAULT_SHARE = 'https://pan.quark.cn/s/cb7e803942d9';
@@ -149,6 +150,16 @@ async function main(raw) {
   const bad = preflightLocalFile(req);
   if (bad) { emit(bad); return; }
   const accountDone = await preflightAccount(req);
+  const platformPending = pending.filter((d) => d === 'x' || PLATFORMS.indexOf(d) >= 0);
+  let cdpError = null;
+  if (!dry && platformPending.length > 0) {
+    try {
+      await ensureCdp(req.cdpUrl, { timeoutMs: Number(req.cdpTimeoutMs || 20000) });
+    } catch (e) {
+      cdpError = String((e && e.message) || e).slice(0, 400);
+      console.error('driver: ' + cdpError);
+    }
+  }
   for (const dest of pending) {
     try {
       if (accountDone && accountDone.indexOf(dest) >= 0) {
@@ -158,7 +169,10 @@ async function main(raw) {
       if (dry) { emit({ dest, status: 'dry-run', detail: '演练：' + (req.fileName || req.file) + ' 将发布到 ' + dest }); continue; }
       let r;
       if (dest === 'quark') r = await doQuark(req);
-      else if (dest === 'x' || PLATFORMS.indexOf(dest) >= 0) r = await doPlatform(req, dest, platformCommand, share, passcode);
+      else if (dest === 'x' || PLATFORMS.indexOf(dest) >= 0) {
+        if (cdpError) { emit({ dest, status: 'unavailable', detail: '发布浏览器不可用：' + cdpError }); continue; }
+        r = await doPlatform(req, dest, platformCommand, share, passcode);
+      }
       else r = { dest, status: 'failed', detail: '未知目的地' };
       emit(r);
     } catch (e) { emit({ dest, status: 'failed', detail: String(e.message || e).slice(0, 400) }); }

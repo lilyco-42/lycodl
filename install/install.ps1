@@ -60,6 +60,11 @@ if (-not $NoShortcut) {
   }
 }
 
+$driver = Join-Path $dest "publish-driver\platforms.mjs"
+if (-not (Test-Path $driver)) {
+  Write-Warning "publish-driver is missing from the package; multi-platform publishing will not start."
+}
+
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   Write-Warning "Node.js not found: downloads work, but multi-platform publishing needs Node 18+ (publish-driver is Node)."
 }

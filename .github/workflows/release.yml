@@ -85,6 +85,7 @@ jobs:
           cp "$BIN" dist/lycodl-linux-x64/
           cp -r extension dist/lycodl-linux-x64/
           cp -r publish-driver dist/lycodl-linux-x64/
+          test -f dist/lycodl-linux-x64/publish-driver/platforms.mjs
           cp README.md dist/lycodl-linux-x64/
           tar -C dist -czf lycodl-linux-x64.tar.gz lycodl-linux-x64
       - uses: actions/upload-artifact@v4
@@ -113,6 +114,7 @@ jobs:
           cp "$BIN" dist/lycodl-linux-aarch64/
           cp -r extension dist/lycodl-linux-aarch64/
           cp -r publish-driver dist/lycodl-linux-aarch64/
+          test -f dist/lycodl-linux-aarch64/publish-driver/platforms.mjs
           cp README.md dist/lycodl-linux-aarch64/
           tar -C dist -czf lycodl-linux-aarch64.tar.gz lycodl-linux-aarch64
       - uses: actions/upload-artifact@v4
@@ -147,6 +149,7 @@ jobs:
           Copy-Item -Recurse extension dist/lycodl-windows-x64/
           Copy-Item -Recurse publish-driver dist/lycodl-windows-x64/
           Copy-Item README.md dist/lycodl-windows-x64/
+          if (-not (Test-Path 'dist/lycodl-windows-x64/publish-driver/platforms.mjs')) { throw 'publish-driver missing from Windows package' }
           Compress-Archive -Path dist/lycodl-windows-x64/* -DestinationPath lycodl-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -186,6 +189,7 @@ jobs:
           cp target/release/lycodl dist/lycodl-macos-universal/
           cp -r extension dist/lycodl-macos-universal/
           cp -r publish-driver dist/lycodl-macos-universal/
+          test -f dist/lycodl-macos-universal/publish-driver/platforms.mjs
           cp README.md dist/lycodl-macos-universal/
           tar -C dist -czf lycodl-macos-universal.tar.gz lycodl-macos-universal
       - uses: actions/upload-artifact@v4

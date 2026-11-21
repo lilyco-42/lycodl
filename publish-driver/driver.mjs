@@ -7,21 +7,23 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureCdp } from './cdp-util.mjs';
+import { BROWSER_DESTS, dataDir, defaultQuakeCommand, isBrowserDest } from './platforms.mjs';
 
-const PLATFORMS = ['bilibili', 'douyin', 'xhs', 'kuaishou', 'youtube'];
+const PLATFORMS = BROWSER_DESTS.filter((d) => d !== 'x');
 const DEFAULT_SHARE = 'https://pan.quark.cn/s/cb7e803942d9';
 const DEFAULT_PASSCODE = 'xdDX';
 const DEFAULT_QUARK_DIR = '/06_待整理/lycodl-短剧集';
-const DEFAULT_QUAKE = '/home/lilyco/.config/kuake/run.sh';
+const DEFAULT_QUAKE = defaultQuakeCommand();
 // 6 个平台的真实提交器（CDP + 各站 DOM 流程）。可用 settings.publishPlatformCommand 覆盖。
 // 优先用与本文件同目录的 platform-publish.mjs（仓库内/安装目录内都能自洽），否则回落到安装路径。
-const INSTALLED_PUBLISHER = '/home/lilyco/.local/share/lycodl/platform-publish.mjs';
+const INSTALLED_PUBLISHER = join(dataDir(), 'platform-publish.mjs');
 const SIBLING_PUBLISHER = fileURLToPath(new URL('./platform-publish.mjs', import.meta.url));
 const DEFAULT_PUBLISHER = existsSync(SIBLING_PUBLISHER) ? SIBLING_PUBLISHER : INSTALLED_PUBLISHER;
 const DEFAULT_PLATFORM_COMMAND = 'node ' + JSON.stringify(DEFAULT_PUBLISHER);
-const INSTALLED_CAPABILITIES = '/home/lilyco/.local/share/lycodl/publish-capabilities.mjs';
+const INSTALLED_CAPABILITIES = join(dataDir(), 'publish-capabilities.mjs');
 const SIBLING_CAPABILITIES = fileURLToPath(new URL('./publish-capabilities.mjs', import.meta.url));
 const DEFAULT_CAPABILITIES = existsSync(SIBLING_CAPABILITIES) ? SIBLING_CAPABILITIES : INSTALLED_CAPABILITIES;
 
@@ -150,7 +152,7 @@ async function main(raw) {
   const bad = preflightLocalFile(req);
   if (bad) { emit(bad); return; }
   const accountDone = await preflightAccount(req);
-  const platformPending = pending.filter((d) => d === 'x' || PLATFORMS.indexOf(d) >= 0);
+  const platformPending = pending.filter(isBrowserDest);
   let cdpError = null;
   if (!dry && platformPending.length > 0) {
     try {
@@ -169,7 +171,7 @@ async function main(raw) {
       if (dry) { emit({ dest, status: 'dry-run', detail: '演练：' + (req.fileName || req.file) + ' 将发布到 ' + dest }); continue; }
       let r;
       if (dest === 'quark') r = await doQuark(req);
-      else if (dest === 'x' || PLATFORMS.indexOf(dest) >= 0) {
+      else if (isBrowserDest(dest)) {
         if (cdpError) { emit({ dest, status: 'unavailable', detail: '发布浏览器不可用：' + cdpError }); continue; }
         r = await doPlatform(req, dest, platformCommand, share, passcode);
       }

@@ -168,6 +168,31 @@ yt-dlp 认识 1398 个站点提取器（`--list-extractors` 实测 1755 行，�
 GitHub Actions 流水线见 `.github/workflows/release.yml`；构建前会先 `pnpm build` 生成
 `web/dist`（被 `.gitignore` 忽略，不进仓库），再编译进二进制。
 
+### Windows 怎么用
+
+1. 安装（PowerShell）：`irm https://raw.githubusercontent.com/lilyco-42/lycodl/master/install/install.ps1 | iex`
+   - 或手动下载 `lycodl-windows-x64.zip`，解包后运行里面的 `lycodl.exe`
+2. 启动：双击「lycodl 视频下载器」快捷方式，或 `lycodl.exe --web`，然后访问 <http://127.0.0.1:8766>
+3. 发布多平台需要 **Node.js 18+**：`publish-driver/` 是 Node 脚本，已随包分发；未装 Node 时下载功能正常，发布入口会明确提示
+4. 发布浏览器：Chrome 需带 `--remote-debugging-port=9333` 启动，设置页的 CDP 地址填 `http://127.0.0.1:9333`
+5. 自动拉起浏览器（`systemctl --user start lycodl-cdp.service`）只在 Linux 生效；Windows/macOS 需要自己先开好调试端口
+
+### macOS / Linux 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lilyco-42/lycodl/master/install/install.sh | bash
+```
+
+装到 `~/.local/opt/lycodl`，软链到 `~/.local/bin/lycodl`。
+
+### 多平台发布（7 个目的地）
+
+`quark / bilibili / douyin / xhs / kuaishou / youtube / x`。每个平台是一段独立的 CDP DOM 流程，依赖该平台的登录态，没有通用上传协议。
+
+- 目的地清单、Cookie 判定规则、数据目录统一在 `publish-driver/platforms.mjs`（Windows 读 `%APPDATA%\lycodl`，Linux 读 `$XDG_DATA_HOME/lycodl`）
+- 新增一个平台 = 在 `platform-publish.mjs` 加一个 handler，再在 `platforms.mjs` 的 `DESTS` 里注册
+- 不想改仓库也可以用设置里的 `publishPlatformCommand` 接外部 driver（stdin JSON / stdout 一行 JSON）
+
 **Android 不是 App，是 Termux 命令行。** Android 上没法像桌面那样起 Web 控制台，发布的是
 原生 aarch64 CLI（用 NDK r26b 交叉，链接 `/system/bin/linker64`，GLIBC 那套 dynamic
 loader 在 Android 上跑不了）。用法：把 `lycodl` 推到手机，在 Termux 里

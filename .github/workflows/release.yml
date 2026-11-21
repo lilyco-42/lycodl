@@ -84,6 +84,7 @@ jobs:
           mkdir -p dist/lycodl-linux-x64
           cp "$BIN" dist/lycodl-linux-x64/
           cp -r extension dist/lycodl-linux-x64/
+          cp -r publish-driver dist/lycodl-linux-x64/
           cp README.md dist/lycodl-linux-x64/
           tar -C dist -czf lycodl-linux-x64.tar.gz lycodl-linux-x64
       - uses: actions/upload-artifact@v4
@@ -111,6 +112,7 @@ jobs:
           mkdir -p dist/lycodl-linux-aarch64
           cp "$BIN" dist/lycodl-linux-aarch64/
           cp -r extension dist/lycodl-linux-aarch64/
+          cp -r publish-driver dist/lycodl-linux-aarch64/
           cp README.md dist/lycodl-linux-aarch64/
           tar -C dist -czf lycodl-linux-aarch64.tar.gz lycodl-linux-aarch64
       - uses: actions/upload-artifact@v4
@@ -143,6 +145,7 @@ jobs:
           New-Item -ItemType Directory -Force dist/lycodl-windows-x64
           Copy-Item target/x86_64-pc-windows-msvc/release/lycodl.exe dist/lycodl-windows-x64/
           Copy-Item -Recurse extension dist/lycodl-windows-x64/
+          Copy-Item -Recurse publish-driver dist/lycodl-windows-x64/
           Copy-Item README.md dist/lycodl-windows-x64/
           Compress-Archive -Path dist/lycodl-windows-x64/* -DestinationPath lycodl-windows-x64.zip
       - uses: actions/upload-artifact@v4
@@ -182,6 +185,7 @@ jobs:
           mkdir -p dist/lycodl-macos-universal
           cp target/release/lycodl dist/lycodl-macos-universal/
           cp -r extension dist/lycodl-macos-universal/
+          cp -r publish-driver dist/lycodl-macos-universal/
           cp README.md dist/lycodl-macos-universal/
           tar -C dist -czf lycodl-macos-universal.tar.gz lycodl-macos-universal
       - uses: actions/upload-artifact@v4
@@ -294,6 +298,11 @@ jobs:
           pattern: lycodl-*
           path: dist
           merge-multiple: true
+      - uses: actions/checkout@v4
+      - name: Add installers
+        run: |
+          cp install/install.sh dist/install.sh
+          cp install/install.ps1 dist/install.ps1
       - name: List artifacts
         run: ls -lh dist
       - uses: softprops/action-gh-release@v2

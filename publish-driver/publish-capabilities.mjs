@@ -6,23 +6,13 @@
 // stdout: one JSON object: { caps: [{dest,available,published,reason,detail,source}], checkedAt, errors }
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { COOKIE_RULES, DESTS, dataDir, defaultQuakeCommand } from './platforms.mjs';
 
-const DESTS = ['quark', 'bilibili', 'douyin', 'xhs', 'kuaishou', 'youtube', 'x'];
-const KUAKE_DEFAULT = '/home/lilyco/.config/kuake/run.sh';
-const INSTALLED_PUBLISHER = '/home/lilyco/.local/share/lycodl/platform-publish.mjs';
+const KUAKE_DEFAULT = defaultQuakeCommand();
+const INSTALLED_PUBLISHER = join(dataDir(), 'platform-publish.mjs');
 const SIBLING_PUBLISHER = fileURLToPath(new URL('./platform-publish.mjs', import.meta.url));
-
-// Cookie names that reliably mean a signed-in browser session for each platform.
-// We check only names + whether expired; values are never logged or returned.
-const COOKIE_RULES = {
-  bilibili: [['SESSDATA', '.bilibili.com'], ['DedeUserID', '.bilibili.com']],
-  douyin: [['sessionid', '.douyin.com'], ['sid_tt', '.douyin.com']],
-  xhs: [['web_session', '.xiaohongshu.com']],
-  kuaishou: [['userId', '.kuaishou.com'], ['passToken', 'id.kuaishou.com']],
-  youtube: [['LOGIN_INFO', '.youtube.com'], ['SID', '.youtube.com']],
-  x: [['auth_token', '.x.com'], ['ct0', '.x.com']],
-};
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -130,7 +120,7 @@ function kuakeJson(args, cmd) {
 function publisherPresent(req) {
   if (req.platformCommand && String(req.platformCommand).trim()) {
     const first = String(req.platformCommand).trim().split(/\s+/)[0];
-    if (first === 'node' || first === '/usr/bin/node' || first === 'nodejs') {
+    if (first === 'node' || first === 'nodejs' || /(^|[\\/])node(\.exe)?$/i.test(first)) {
       const m = String(req.platformCommand).match(/(?:^|\s)([^\s]+\.mjs)(?=\s|$)/);
       return !m || existsSync(m[1]);
     }

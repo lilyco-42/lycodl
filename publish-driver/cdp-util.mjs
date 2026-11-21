@@ -31,18 +31,23 @@ export async function ensureCdp(cdpUrl, options = {}) {
   const localDedicatedPort = /^https?:\/\/(?:127\.0\.0\.1|localhost):9333$/i.test(base);
   let startDetail = 'not attempted (non-default CDP URL)';
   if (localDedicatedPort && options.autoStart !== false) {
-    const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
-    const runtimeDir = process.env.XDG_RUNTIME_DIR || ('/run/user/' + uid);
-    const env = Object.assign({}, process.env, {
-      XDG_RUNTIME_DIR: runtimeDir,
-      DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || ('unix:path=' + runtimeDir + '/bus'),
-    });
-    const r = spawnSync('systemctl', ['--user', 'start', service], {
-      encoding: 'utf8', timeout: 12000, env,
-    });
-    startDetail = r.error
-      ? String(r.error.message || r.error).slice(0, 240)
-      : (r.status === 0 ? 'systemctl start ok' : String(r.stderr || r.stdout || ('exit ' + r.status)).trim().slice(0, 240));
+    if (process.platform !== 'linux') {
+      startDetail = 'auto-start is Linux-only; on ' + process.platform
+        + ' start Chrome with --remote-debugging-port=9333 first';
+    } else {
+      const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
+      const runtimeDir = process.env.XDG_RUNTIME_DIR || ('/run/user/' + uid);
+      const env = Object.assign({}, process.env, {
+        XDG_RUNTIME_DIR: runtimeDir,
+        DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || ('unix:path=' + runtimeDir + '/bus'),
+      });
+      const r = spawnSync('systemctl', ['--user', 'start', service], {
+        encoding: 'utf8', timeout: 12000, env,
+      });
+      startDetail = r.error
+        ? String(r.error.message || r.error).slice(0, 240)
+        : (r.status === 0 ? 'systemctl start ok' : String(r.stderr || r.stdout || ('exit ' + r.status)).trim().slice(0, 240));
+    }
   }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

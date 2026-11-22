@@ -64,6 +64,7 @@ jobs:
         run: |
           node publish-driver/validate-adapters.mjs
           node --test publish-driver/adapter.test.mjs
+          node extension/validate-extension.mjs
 
       - name: Runtime smoke
         run: node scripts/smoke.mjs

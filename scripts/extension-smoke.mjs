@@ -5,6 +5,7 @@
 // Usage: node scripts/extension-smoke.mjs [--chrome /path/to/chrome]
 'use strict';
 
+import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -113,11 +114,45 @@ async function main() {
     console.log('executor result', JSON.stringify(result));
     if (!result || result.status !== 'ok') throw new Error('adapter smoke failed: ' + JSON.stringify(result));
 
-    console.log('OK: extension executor and manifest validated');
+    // Web page -> content bridge -> background path (needs an http origin)
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><title>bridge</title><p>bridge</p>');
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+    const { targetId } = await browser.send('Target.createTarget', { url: `http://127.0.0.1:${port}/` });
+    await sleep(2500);
+    const targets = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+    const pageTarget = targets.find((t) => t.id === targetId);
+    if (!pageTarget) throw new Error('bridge tab not found');
+    const tab = await connect(pageTarget.webSocketDebuggerUrl);
+    await tab.send('Page.enable');
+    await sleep(800);
+    await tab.send('Runtime.evaluate', {
+      expression: `(function(){window.__lyco=null;window.addEventListener('message',function(e){if(e.data&&e.data.source==='lycodl'&&e.data.type==='runAdapterResult')window.__lyco=e.data;});return 1;})()`,
+      returnByValue: true,
+    });
+    await tab.send('Runtime.evaluate', {
+      expression: `window.postMessage(${JSON.stringify({ source: 'lycodl', type: 'runAdapter', requestId: 'ci', adapter, payload: { file: '', fileName: '' } })}, '*')`,
+      returnByValue: true,
+    });
+    let bridged = null;
+    for (let i = 0; i < 20 && !bridged; i += 1) {
+      await sleep(1500);
+      const r = await tab.send('Runtime.evaluate', { expression: 'window.__lyco', returnByValue: true });
+      if (r.result && r.result.value) bridged = r.result.value;
+    }
+    server.close();
+    if (!bridged || !bridged.ok) throw new Error('page bridge failed: ' + JSON.stringify(bridged));
+    console.log('bridge result', JSON.stringify(bridged.result));
+
+    console.log('OK: extension executor, page bridge and manifest validated');
     browser.ws.close();
   } finally {
     chrome.kill('SIGKILL');
-    await rm(profile, { recursive: true, force: true });
+    await sleep(800);
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 }
 

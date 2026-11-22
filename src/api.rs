@@ -204,6 +204,9 @@ async fn health(State(st): State<AppState>) -> Json<Value> {
         "cdpReady": cdp_ready,
         "cdpDetail": cdp_detail,
         "cdpUrl": cdp_url,
+        "dataDir": crate::paths::data_dir().display().to_string(),
+        "adaptersDir": crate::publish::adapters_dir(&st.snapshot()).display().to_string(),
+        "adapterCount": crate::publish::list_adapters(&st.snapshot()).len(),
     }))
 }
 

@@ -7,7 +7,7 @@
  * 只在本机 origin 上回话，避免被任意网页利用。
  */
 (function () {
-  var PAGE_ORIGINS = ["http://127.0.0.1:8766", "http://localhost:8766"];
+  var PAGE_ORIGIN = /^http:\/\/(127\.0\.0\.1|localhost):\d+$/;
 
   function reply(origin, data) {
     try {
@@ -16,7 +16,7 @@
   }
 
   window.addEventListener("message", function (event) {
-    if (PAGE_ORIGINS.indexOf(event.origin) < 0) return;
+    if (!PAGE_ORIGIN.test(event.origin)) return;
     var data = event.data;
     if (!data || data.source !== "lycodl" || data.type !== "runAdapter") return;
     var requestId = data.requestId || String(Date.now());

@@ -17,6 +17,11 @@ const argChrome = process.argv.indexOf('--chrome');
 const CHROME = argChrome > 0 ? process.argv[argChrome + 1] : (process.env.CHROME_BIN || '/usr/bin/google-chrome-stable');
 const PORT = 9331;
 
+if (typeof WebSocket === 'undefined') {
+  console.error('extension smoke needs Node 22+ (global WebSocket)');
+  process.exit(2);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function waitCdp() {

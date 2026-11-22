@@ -58,6 +58,17 @@ mv "$tmp/$folder" "$OPT_DIR/lycodl"
 ln -sf "$OPT_DIR/lycodl/lycodl" "$BIN_DIR/lycodl"
 log "linked $BIN_DIR/lycodl"
 
+DATA_DIR="${LYCODL_DATA_DIR:-${XDG_DATA_HOME:-$HOME_DIR/.local/share}/lycodl}"
+mkdir -p "$DATA_DIR/adapters"
+if [ -d "$OPT_DIR/lycodl/publish-driver" ]; then
+  cp "$OPT_DIR/lycodl/publish-driver/driver.mjs" "$DATA_DIR/publish-driver.mjs"
+  for f in platform-publish.mjs adapter-runner.mjs platforms.mjs cdp-util.mjs publish-capabilities.mjs validate-adapters.mjs; do
+    [ -f "$OPT_DIR/lycodl/publish-driver/$f" ] && cp "$OPT_DIR/lycodl/publish-driver/$f" "$DATA_DIR/$f"
+  done
+  cp "$OPT_DIR/lycodl/publish-driver/adapters/"*.json "$DATA_DIR/adapters/" 2>/dev/null || true
+  log "publish driver + adapters -> $DATA_DIR"
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   log "warn: Node.js not found - download works, but multi-platform publishing needs Node 18+"
 fi

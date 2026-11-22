@@ -173,7 +173,7 @@ GitHub Actions 流水线见 `.github/workflows/release.yml`；构建前会先 `p
 1. 安装（PowerShell）：`irm https://raw.githubusercontent.com/lilyco-42/lycodl/master/install/install.ps1 | iex`
    - 或手动下载 `lycodl-windows-x64.zip`，解包后运行里面的 `lycodl.exe`
 2. 启动：双击「lycodl 视频下载器」快捷方式，或 `lycodl.exe --web`，然后访问 <http://127.0.0.1:8766>
-3. 发布多平台需要 **Node.js 18+**：`publish-driver/` 是 Node 脚本，已随包分发；未装 Node 时下载功能正常，发布入口会明确提示
+3. 发布多平台：安装脚本会把 `publish-driver/`（含 `adapters/`）部署到 `%APPDATA%\lycodl`；**Node 18+** 只在服务端执行器需要，改用浏览器扩展执行器可完全免 Node
 4. 发布浏览器：Chrome 需带 `--remote-debugging-port=9333` 启动，设置页的 CDP 地址填 `http://127.0.0.1:9333`
 5. 自动拉起浏览器（`systemctl --user start lycodl-cdp.service`）只在 Linux 生效；Windows/macOS 需要自己先开好调试端口
 

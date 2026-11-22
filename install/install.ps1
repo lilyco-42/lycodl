@@ -60,6 +60,19 @@ if (-not $NoShortcut) {
   }
 }
 
+$dataDir = Join-Path $env:APPDATA "lycodl"
+$driverSrc = Join-Path $dest "publish-driver"
+if (Test-Path $driverSrc) {
+  New-Item -ItemType Directory -Force -Path (Join-Path $dataDir "adapters") | Out-Null
+  Copy-Item -Force (Join-Path $driverSrc "driver.mjs") (Join-Path $dataDir "publish-driver.mjs")
+  foreach ($f in @("platform-publish.mjs","adapter-runner.mjs","platforms.mjs","cdp-util.mjs","publish-capabilities.mjs","validate-adapters.mjs")) {
+    $src = Join-Path $driverSrc $f
+    if (Test-Path $src) { Copy-Item -Force $src (Join-Path $dataDir $f) }
+  }
+  Copy-Item -Force (Join-Path $driverSrc "adapters\*.json") (Join-Path $dataDir "adapters")
+  Write-Host "publish driver + adapters -> $dataDir"
+}
+
 $driver = Join-Path $dest "publish-driver\platforms.mjs"
 if (-not (Test-Path $driver)) {
   Write-Warning "publish-driver is missing from the package; multi-platform publishing will not start."

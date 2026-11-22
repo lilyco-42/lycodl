@@ -104,6 +104,22 @@ printf '{"file":"/tmp/demo.mp4","dryRun":true,"pending":["bilibili2"],"cdpUrl":"
 
 扩展执行器需要用户在首次调用时同意一次「调试浏览器」授权；adapter 由 `GET /api/publish/adapters/:id` 提供，扩展只负责执行。
 
+网页触发扩展执行（免 Node，已实测）：
+
+```js
+window.postMessage({
+  source: "lycodl", type: "runAdapter", requestId: "r1",
+  adapter,                                   // GET /api/publish/adapters/:id
+  payload: { file, fileName, title, shareUrl, sharePasscode }
+}, "*");
+window.addEventListener("message", (e) => {
+  if (e.data?.source === "lycodl" && e.data.type === "runAdapterResult") console.log(e.data);
+});
+```
+
+扩展侧由 `extension/page-bridge.js`（content script）转给 `background.js`，再进 `adapter-executor.js`（`chrome.debugger`）。首次调用会要求用户同意一次「调试浏览器」。
+加载扩展：`chrome://extensions` → 开发者模式 → 加载已解压的扩展 → `lycodl/extension`；本机自动化可用 CDP `Extensions.loadUnpacked`。
+
 强制走 adapter（用于等价验证）：
 
 ```bash

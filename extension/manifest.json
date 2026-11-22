@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "lycodl 发送到下载器",
-  "version": "0.1.0",
-  "description": "把当前页面或右键的链接一键发送到本机 lycodl 下载器（只连 127.0.0.1 / localhost，不向任何外部服务器发送数据）。",
+  "version": "0.2.1",
+  "description": "把链接发送到本机 lycodl，并可用 chrome.debugger 执行发布 adapter（只连 127.0.0.1 / localhost）。",
   "permissions": [
     "activeTab",
     "contextMenus",
@@ -15,6 +15,12 @@
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],
+  "externally_connectable": {
+    "matches": [
+      "http://127.0.0.1/*",
+      "http://localhost/*"
+    ]
+  },
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -41,5 +47,17 @@
       },
       "description": "把当前页面发送到 lycodl"
     }
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "page-bridge.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
 }

@@ -400,6 +400,26 @@ if (chrome.commands && chrome.commands.onCommand) {
 }
 
 /* action 有 popup，点击不会触发 onClicked；用户直接用 popup 里的按钮或右键菜单 */
+/* 网页（http://127.0.0.1:8766）通过 externally_connectable 调用同一执行器 */
+function handleRunAdapter(message, sendResponse) {
+  var adapter = message && message.adapter;
+  var payload = (message && message.payload) || {};
+  if (!adapter || typeof self.lycodlRunAdapter !== "function") {
+    sendResponse({ ok: false, error: "adapter executor unavailable" });
+    return false;
+  }
+  self.lycodlRunAdapter(adapter, payload).then(
+    function (r) { sendResponse({ ok: true, result: r }); },
+    function (cause) { sendResponse({ ok: false, error: cause && cause.message ? cause.message : String(cause) }); }
+  );
+  return true;
+}
+
+chrome.runtime.onMessageExternal.addListener(function (message, sender, sendResponse) {
+  if (!message || message.type !== "lycodlRunAdapter") return false;
+  return handleRunAdapter(message, sendResponse);
+});
+
 chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   var type = message && message.type;
 
@@ -419,17 +439,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   }
 
   if (type === "lycodlRunAdapter") {
-    var adapter = message.adapter;
-    var payload = message.payload || {};
-    if (!adapter || typeof self.lycodlRunAdapter !== "function") {
-      sendResponse({ ok: false, error: "adapter executor unavailable" });
-      return false;
-    }
-    self.lycodlRunAdapter(adapter, payload).then(
-      function (r) { sendResponse({ ok: true, result: r }); },
-      function (cause) { sendResponse({ ok: false, error: cause && cause.message ? cause.message : String(cause) }); }
-    );
-    return true;
+    return handleRunAdapter(message, sendResponse);
   }
 
   if (type === "test") {

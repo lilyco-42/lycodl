@@ -1,0 +1,29 @@
+{
+  "id": "zhihu",
+  "name": "知乎（视频）",
+  "origin": "https://www.zhihu.com",
+  "cookies": [["z_c0", ".zhihu.com"]],
+  "maxFileBytes": 2147483648,
+  "timeoutMs": 900000,
+  "steps": [
+    { "action": "goto", "url": "https://www.zhihu.com/creator/video/upload", "timeoutMs": 30000 },
+    { "action": "waitFor", "expr": "!!document.querySelector('input[type=file]') || location.href.indexOf('signin')>=0", "timeoutMs": 60000 },
+    { "action": "clickText", "texts": ["上传视频", "选择文件"], "optional": true },
+    { "action": "waitFor", "expr": "!!document.querySelector('input[type=file]')", "timeoutMs": 60000 },
+    { "action": "setFile", "selector": "input[type=file]" },
+    {
+      "action": "waitFor",
+      "expr": "(function(){var t=document.body.innerText||'';return t.indexOf('重新上传')>=0||t.indexOf('上传成功')>=0||!!document.querySelector('input[placeholder*=标题]');})()",
+      "timeoutMs": 900000
+    },
+    { "action": "waitMs", "ms": 2500 },
+    { "action": "fill", "selector": "input[placeholder*=标题], textarea[placeholder*=标题]", "value": "$title", "maxBytes": 60 },
+    { "action": "fill", "selector": "div[contenteditable=true], textarea[placeholder*=描述]", "value": "$desc", "maxBytes": 900, "optional": true },
+    { "action": "waitMs", "ms": 800 },
+    { "action": "clickText", "texts": ["发布", "发布视频"] }
+  ],
+  "result": {
+    "success": { "texts": ["发布成功", "视频发布成功"], "timeoutMs": 180000 },
+    "detail": "知乎视频已发布"
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lilyco-42/lycodl/publish-driver/adapters/schema.json",
+  "title": "lycodl publish adapter v1",
+  "type": "object",
+  "required": ["id", "name", "origin", "steps", "result"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$" },
+    "name": { "type": "string", "minLength": 1 },
+    "origin": { "type": "string", "pattern": "^https://" },
+    "cookies": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "string", "minLength": 1 }
+      }
+    },
+    "maxFileBytes": { "type": "integer", "minimum": 1048576 },
+    "timeoutMs": { "type": "integer", "minimum": 1000 },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/step" }
+    },
+    "result": {
+      "type": "object",
+      "required": ["success"],
+      "additionalProperties": false,
+      "properties": {
+        "success": { "$ref": "#/$defs/test" },
+        "urlExpr": { "type": "string", "minLength": 1 },
+        "detail": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "test": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "expr": { "type": "string", "minLength": 1 },
+        "texts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "urlIncludes": { "type": "string", "minLength": 1 },
+        "timeoutMs": { "type": "integer", "minimum": 1000 },
+        "intervalMs": { "type": "integer", "minimum": 100 }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": ["action"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": ["goto", "waitFor", "waitMs", "setFile", "fill", "clickText", "clickDeep", "eval", "press"]
+        },
+        "url": { "type": "string", "minLength": 1 },
+        "expr": { "type": "string", "minLength": 1 },
+        "ms": { "type": "integer", "minimum": 0 },
+        "selector": { "type": "string", "minLength": 1 },
+        "value": { "type": "string" },
+        "texts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "preferTag": { "type": "string" },
+        "maxBytes": { "type": "integer", "minimum": 1 },
+        "timeoutMs": { "type": "integer", "minimum": 1000 },
+        "intervalMs": { "type": "integer", "minimum": 100 },
+        "optional": { "type": "boolean" },
+        "key": { "type": "string" }
+      },
+      "allOf": [
+        { "if": { "properties": { "action": { "const": "goto" } } }, "then": { "required": ["url"] } },
+        { "if": { "properties": { "action": { "const": "waitFor" } } }, "then": { "required": ["expr"] } },
+        { "if": { "properties": { "action": { "const": "waitMs" } } }, "then": { "required": ["ms"] } },
+        { "if": { "properties": { "action": { "const": "setFile" } } }, "then": { "required": ["selector"] } },
+        { "if": { "properties": { "action": { "const": "fill" } } }, "then": { "required": ["selector", "value"] } },
+        { "if": { "properties": { "action": { "const": "clickText" } } }, "then": { "required": ["texts"] } },
+        { "if": { "properties": { "action": { "const": "clickDeep" } } }, "then": { "required": ["texts"] } },
+        { "if": { "properties": { "action": { "const": "eval" } } }, "then": { "required": ["expr"] } }
+      ]
+    }
+  }
+}

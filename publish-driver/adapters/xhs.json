@@ -1,0 +1,43 @@
+{
+  "id": "xhs",
+  "name": "小红书",
+  "origin": "https://creator.xiaohongshu.com",
+  "cookies": [["web_session", ".xiaohongshu.com"]],
+  "maxFileBytes": 2147483648,
+  "timeoutMs": 900000,
+  "steps": [
+    {
+      "action": "goto",
+      "url": "https://creator.xiaohongshu.com/publish/publish?source=official",
+      "timeoutMs": 30000
+    },
+    { "action": "waitFor", "expr": "!!document.querySelector('input[type=file]')", "timeoutMs": 60000 },
+    { "action": "setFile", "selector": "input[type=file]" },
+    {
+      "action": "waitFor",
+      "expr": "!!document.querySelector('input.d-text, input[placeholder*=标题]')",
+      "timeoutMs": 900000
+    },
+    { "action": "waitMs", "ms": 3000 },
+    { "action": "clickText", "texts": ["我知道了", "知道了"], "optional": true },
+    { "action": "waitMs", "ms": 500 },
+    {
+      "action": "fill",
+      "selector": "input.d-text, input[placeholder*=标题]",
+      "value": "$title",
+      "maxBytes": 20
+    },
+    {
+      "action": "fill",
+      "selector": ".tiptap.ProseMirror, div[contenteditable=true]",
+      "value": "$desc",
+      "maxBytes": 900
+    },
+    { "action": "waitMs", "ms": 1200 },
+    { "action": "clickDeep", "texts": ["发布", "发布笔记"], "preferTag": "BUTTON" }
+  ],
+  "result": {
+    "success": { "texts": ["发布成功", "笔记发布成功"], "urlIncludes": "publish/success", "timeoutMs": 180000 },
+    "detail": "小红书已发布"
+  }
+}

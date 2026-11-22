@@ -60,6 +60,12 @@ export async function ensureCdp(cdpUrl, options = {}) {
   throw new Error('CDP 未就绪（' + versionUrl + '）；自动拉起 ' + service + '：' + startDetail);
 }
 
+/** Ensure CDP is up, then open a flattened browser-level connection. */
+export async function connectBrowser(cdpUrl) {
+  const ver = await ensureCdp(cdpUrl, { timeoutMs: 20000 });
+  return Conn.connect(ver.webSocketDebuggerUrl);
+}
+
 export class Conn {
   constructor(ws, sessionId) { this.ws = ws; this.sessionId = sessionId || null; this.id = 0; this.waiting = new Map();
     ws.addEventListener('message', (ev) => {

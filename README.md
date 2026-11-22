@@ -185,7 +185,16 @@ curl -fsSL https://raw.githubusercontent.com/lilyco-42/lycodl/master/install/ins
 
 装到 `~/.local/opt/lycodl`，软链到 `~/.local/bin/lycodl`。
 
-### 多平台发布（7 个目的地）
+### 多平台发布（声明式 adapter）
+
+每个平台是 `publish-driver/adapters/<id>.json` 里的一段步骤描述，**新增平台只加一个 JSON**，不用改 Rust、前端或 `platform-publish.mjs`。协议、动作表、变量与两个执行器（Node / 浏览器扩展）见 [docs/ADAPTERS.md](docs/ADAPTERS.md)。
+
+```bash
+node publish-driver/validate-adapters.mjs     # 契约校验
+node --test publish-driver/adapter.test.mjs    # 6 项单测
+```
+
+### 已有 7 个目的地（旧实现保留）
 
 `quark / bilibili / douyin / xhs / kuaishou / youtube / x`。每个平台是一段独立的 CDP DOM 流程，依赖该平台的登录态，没有通用上传协议。
 

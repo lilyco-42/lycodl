@@ -186,14 +186,54 @@ fn already_attempted(file: &str, size: u64, dry_run: bool) -> Vec<String> {
 }
 
 fn driver_command(s: &crate::settings::Settings) -> String {
+    driver_path(s).display().to_string()
+}
+
+/// Absolute driver path: settings override, else the data dir default.
+pub fn driver_path(s: &crate::settings::Settings) -> std::path::PathBuf {
     let raw = s.publish_driver.trim();
     if !raw.is_empty() {
-        return raw.to_string();
+        return std::path::PathBuf::from(raw);
     }
-    crate::paths::data_dir()
-        .join("publish-driver.mjs")
-        .display()
-        .to_string()
+    crate::paths::data_dir().join("publish-driver.mjs")
+}
+
+/// Adapter files live next to the driver, so a new platform is one JSON file.
+pub fn adapters_dir(s: &crate::settings::Settings) -> std::path::PathBuf {
+    driver_path(s)
+        .parent()
+        .map(|p| p.join("adapters"))
+        .unwrap_or_else(|| crate::paths::data_dir().join("adapters"))
+}
+
+/// Parse every adapter JSON (invalid files are skipped, not fatal).
+pub fn list_adapters(s: &crate::settings::Settings) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(adapters_dir(s)) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        if path.file_name().and_then(|x| x.to_str()) == Some("schema.json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            out.push(value);
+        }
+    }
+    out.sort_by(|a, b| {
+        a.get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(b.get("id").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+    out
 }
 
 fn now_ms() -> u64 {

@@ -3,6 +3,7 @@
 // 输入 payload: {dest, file, fileName, title, shareUrl, sharePasscode, cdpUrl, draft, timeoutSecs}
 // 输出: {status:'ok'|'failed'|'unavailable', detail, url}
 import { httpJson, Conn, newPage, closePage, truncateBytes, ensureCdp } from './cdp-util.mjs';
+import { loadAdapter, runAdapter } from './adapter-runner.mjs';
 
 const NL = String.fromCharCode(10);
 
@@ -408,7 +409,24 @@ const HANDLERS = { bilibili, douyin, xhs, kuaishou, x: xpost, youtube };
 
 export async function publishPlatform(payload) {
   const dest = String(payload.dest || '');
+  const adapter = loadAdapter(dest);
+  if (adapter && process.env.LYCODL_ADAPTER_FIRST === '1') {
+    try {
+      const r = await runAdapter(adapter, payload);
+      return { status: r.status, detail: String(r.detail || '').slice(0, 500), url: r.url || null };
+    } catch (e) {
+      return { status: 'failed', detail: ('adapter 异常: ' + String((e && e.message) || e)).slice(0, 500) };
+    }
+  }
   const fn = HANDLERS[dest];
+  if (!fn && adapter) {
+    try {
+      const r = await runAdapter(adapter, payload);
+      return { status: r.status, detail: String(r.detail || '').slice(0, 500), url: r.url || null };
+    } catch (e) {
+      return { status: 'failed', detail: ('adapter 异常: ' + String((e && e.message) || e)).slice(0, 500) };
+    }
+  }
   if (!fn) return { status: 'unavailable', detail: '暂不支持平台: ' + dest };
   let browser = null;
   try {

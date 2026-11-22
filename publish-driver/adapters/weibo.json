@@ -1,0 +1,27 @@
+{
+  "id": "weibo",
+  "name": "微博（视频）",
+  "origin": "https://weibo.com",
+  "cookies": [["SUB", ".weibo.com"], ["SUBP", ".weibo.com"]],
+  "maxFileBytes": 2147483648,
+  "timeoutMs": 900000,
+  "steps": [
+    { "action": "goto", "url": "https://weibo.com/upload/choose", "timeoutMs": 30000 },
+    { "action": "waitFor", "expr": "!!document.querySelector('input[type=file]') || location.href.indexOf('login')>=0", "timeoutMs": 60000 },
+    { "action": "waitFor", "expr": "!!document.querySelector('input[type=file]')", "timeoutMs": 60000 },
+    { "action": "setFile", "selector": "input[type=file]" },
+    {
+      "action": "waitFor",
+      "expr": "(function(){var t=document.body.innerText||'';return t.indexOf('上传成功')>=0||t.indexOf('重新上传')>=0||!!document.querySelector('textarea');})()",
+      "timeoutMs": 900000
+    },
+    { "action": "waitMs", "ms": 3000 },
+    { "action": "fill", "selector": "textarea[placeholder*=微博], textarea[placeholder*=说点什么], div[contenteditable=true]", "value": "$desc", "maxBytes": 900 },
+    { "action": "waitMs", "ms": 800 },
+    { "action": "clickText", "texts": ["发布", "发送"] }
+  ],
+  "result": {
+    "success": { "texts": ["发布成功", "已发布"], "timeoutMs": 180000 },
+    "detail": "微博视频已发布"
+  }
+}

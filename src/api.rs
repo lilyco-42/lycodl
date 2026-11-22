@@ -142,6 +142,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs/{id}/retry", post(retry_job))
         .route("/api/jobs/{id}/logs", get(job_logs))
         .route("/api/publish/ledger", get(publish_ledger))
+        .route("/api/publish/adapters", get(publish_adapters))
+        .route("/api/publish/adapters/{id}", get(publish_adapter))
         .route("/api/publish/capabilities", post(publish_capabilities))
         .route("/api/publish/test", post(publish_test))
         .route("/api/publish/local", post(publish_local))
@@ -548,6 +550,34 @@ struct PublishCapabilitiesReq {
     targets: Vec<String>,
     #[serde(default)]
     force: bool,
+}
+
+async fn publish_adapters(State(st): State<AppState>) -> Json<Value> {
+    let s = st.snapshot();
+    Json(serde_json::json!({ "adapters": crate::publish::list_adapters(&s) }))
+}
+
+async fn publish_adapter(
+    State(st): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid adapter id".to_string()));
+    }
+    let s = st.snapshot();
+    let path = crate::publish::adapters_dir(&s).join(format!("{id}.json"));
+    let text = std::fs::read_to_string(&path)
+        .map_err(|_| (StatusCode::NOT_FOUND, format!("adapter not found: {id}")))?;
+    let value: Value = serde_json::from_str(&text).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("invalid adapter json: {e}"),
+        )
+    })?;
+    Ok(Json(value))
 }
 
 async fn publish_capabilities(

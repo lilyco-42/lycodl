@@ -6,6 +6,8 @@
  * 是网页域名，请求会被后端 403，所以这一版干脆没有 content script。
  */
 
+importScripts("adapter-executor.js");
+
 var HOST = "127.0.0.1";
 var PORT_START = 8765;
 var PORT_END = 8785;
@@ -413,6 +415,20 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     sendActiveTab(message && message.mode).then(sendResponse, function (cause) {
       sendResponse({ ok: false, error: cause && cause.message ? cause.message : String(cause) });
     });
+    return true;
+  }
+
+  if (type === "lycodlRunAdapter") {
+    var adapter = message.adapter;
+    var payload = message.payload || {};
+    if (!adapter || typeof self.lycodlRunAdapter !== "function") {
+      sendResponse({ ok: false, error: "adapter executor unavailable" });
+      return false;
+    }
+    self.lycodlRunAdapter(adapter, payload).then(
+      function (r) { sendResponse({ ok: true, result: r }); },
+      function (cause) { sendResponse({ ok: false, error: cause && cause.message ? cause.message : String(cause) }); }
+    );
     return true;
   }
 

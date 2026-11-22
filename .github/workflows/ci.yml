@@ -68,3 +68,20 @@ jobs:
 
       - name: Runtime smoke
         run: node scripts/smoke.mjs
+
+  extension-smoke:
+    name: extension executor smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Adapter contract
+        run: |
+          node publish-driver/validate-adapters.mjs
+          node --test publish-driver/adapter.test.mjs
+          node extension/validate-extension.mjs
+      - name: Executor smoke (headless Chrome + chrome.debugger)
+        run: node scripts/extension-smoke.mjs
